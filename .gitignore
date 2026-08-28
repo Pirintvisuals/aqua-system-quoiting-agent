@@ -1,0 +1,14 @@
+node_modules
+.env
+.DS_Store
+dist
+build
+.netlify
+
+# unrelated nested projects / stray files
+Mimosa-agent/
+mimosabot/
+viszCAD
+
+# source logo file (kept locally, copied into public/logo.webp)
+aqua-system-logo.webp
