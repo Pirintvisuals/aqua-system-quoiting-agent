@@ -31,12 +31,18 @@ same flow. What differs is listed under **Aqua System changes** below.
    one validated form, and submitting it completes the state — so the quote comes
    back **without calling the model at all** (~0.4s, versus four further model
    turns).
-6. **The quote reads as a document, not a wall of bullets.** The breakdown is
+6. **Every question is scannable, not a run-on sentence.** The prompt carries a
+   `FORMÁZÁS` block the model must follow: a one-word acknowledgement, then the
+   question itself in **bold** on its own line, then at most three `•` bullets
+   whose key term is bolded. Questions whose chips speak for themselves (budget,
+   timeline) get no bullets at all. The greeting sets expectations the same way
+   — 8 questions, about a minute, price at the end.
+7. **The quote reads as a document, not a wall of bullets.** The breakdown is
    grouped into sections (készülék / kémény / bontás / szerelés / garancia), the
    total is a highlighted callout, and two new blocks spell out what the price
    **does** and **does not** cover, followed by a "mi történik ezután" step list.
    `## ` and `>> ` in a bot message render as a section heading and the total.
-7. **Branding** — Aqua System logo (`public/logo.webp`), blue `#2b5fd0` / navy
+8. **Branding** — Aqua System logo (`public/logo.webp`), blue `#2b5fd0` / navy
    `#0f2a5e` palette, phone `+36 20 399 0093`, e‑mail
    `keszulekcsere@aqua-system.hu`, and a knowledge base rewritten around the
    one‑day replacement, ~50 years of experience, 500+ jobs, fixed price after
@@ -98,8 +104,8 @@ cheapest assumption and is corrected at the site survey.
 - **Chimney conversion** is derived, not asked: it is added only when
   `old_boiler === "hagyomanyos"`.
 - **Only 24 kW** appliances; exact brand/model is decided at the site survey.
-- **Contact details** are collected one field at a time at the very end
-  (name → e‑mail → phone → postal code), after the progress bar hits 100%.
+- **Contact details** are collected as a single form at the very end, once the
+  progress bar hits 100% — not one question at a time.
 
 ### Quote delivery
 - The itemised estimate is **shown in the chat** as soon as all answers are in,
@@ -126,7 +132,7 @@ cheapest assumption and is corrected at the site survey.
    - `LEAD_EMAIL_TO` — where quotes are sent
    - `LEAD_EMAIL_FROM` — leave as the `onboarding@resend.dev` test sender to start;
      later verify your own domain in Resend and change it.
-2. **Run locally:** `node server.js` → <http://localhost:8888>
+2. **Run locally:** `node server.js` → <http://localhost:8891> (override with `PORT`)
 3. **Deploy (Vercel):** push the repo; set the same env vars in the Vercel
    dashboard. `api/faq-agent.js` is the serverless endpoint, `public/` is static.
 4. **Embed on a site:**

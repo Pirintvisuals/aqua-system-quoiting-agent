@@ -274,7 +274,7 @@
 
     if (!started) {
       started = true;
-      addMessage("bot", `Üdvözlöm az **${BRAND}** árajánló asszisztensénél! Néhány kérdés alapján elkészítem az **előzetes árajánlatát**.\n\n**Bármit megkérdezhet** – árakról, márkákról, garanciáról, határidőkről vagy bármi másról!`);
+      addMessage("bot", `Üdvözlöm az **${BRAND}** árajánló asszisztensénél!\n\n• **8 rövid kérdés**, körülbelül egy perc\n• A végén **azonnal látja az előzetes árat**\n• Közben **bármit kérdezhet** – ár, márkák, garancia`);
       // Clickable example questions so visitors see they can ask freely
       const exWrap = document.createElement("div");
       exWrap.className = "faq-chips faq-example-questions";
