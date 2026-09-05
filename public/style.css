@@ -146,7 +146,7 @@
   position: absolute;
   bottom: 24px;
   right: 24px;
-  width: 384px;
+  width: 412px;
   height: min(640px, calc(100vh - 48px));
   background: #ffffff;
   border-radius: 22px;
@@ -181,8 +181,8 @@
 
 .faq-header-logo {
   width: auto;
-  height: 34px;
-  max-width: 132px;
+  height: 38px;
+  max-width: 96px;
   border-radius: 8px;
   object-fit: contain;
   background: #ffffff;
@@ -235,17 +235,15 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 0;
-  flex: 1;
+  flex: 0 0 auto; /* never squeeze the company name */
 }
 
 .faq-header-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.2px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
 }
 
 .faq-header-status {
@@ -342,6 +340,33 @@
   display: none;
 }
 
+/* Section heading inside a long bot message (the quote breakdown). Gives the
+   itemised estimate scannable groups instead of one flat list of bullets. */
+.faq-sec {
+  margin: 14px 0 6px;
+  padding-top: 10px;
+  border-top: 1px solid #e6eefb;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #2b5fd0;
+}
+.faq-sec:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+/* The grand total, called out so it can't be missed. */
+.faq-total {
+  margin: 14px 0 2px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2b5fd0 0%, #0f2a5e 100%);
+  color: #ffffff;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+}
+.faq-total strong { color: #ffffff !important; }
+
 .faq-bubble {
   max-width: 84%;
   padding: 12px 15px;
@@ -398,6 +423,96 @@
 @keyframes faqBounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* ---------- Fast contact form ----------
+   The four contact questions used to be four separate round-trips to the model.
+   They are one form now, so the customer fills them in at their own speed and
+   the quote comes back in a single request. */
+.faq-form {
+  /* .faq-chips is a flex row (so clearChips() finds this form); the form itself
+     must stack, or the fields shrink to their content width instead of filling. */
+  display: block;
+  margin: 0 0 16px 0;
+  padding: 14px;
+  border: 1.5px solid #d6e6ff;
+  border-radius: 14px;
+  background: #f7fbff;
+  animation: faqMsgIn 0.25s ease-out;
+}
+
+.faq-form-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f2a5e;
+  margin-bottom: 10px;
+}
+
+.faq-form-row { margin-bottom: 9px; }
+
+.faq-form-row label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #566175;
+  margin-bottom: 3px;
+}
+
+.faq-form-row input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  font-size: 15px;
+  font-family: inherit;
+  color: #232b36;
+  background: #ffffff;
+  border: 1.5px solid #d6e6ff;
+  border-radius: 9px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.faq-form-row input:focus {
+  border-color: #2b5fd0;
+  box-shadow: 0 0 0 3px rgba(43, 95, 208, 0.14);
+}
+
+.faq-form-row input.invalid {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.faq-form-err {
+  display: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #dc2626;
+  margin-top: 3px;
+}
+.faq-form-row.showerr .faq-form-err { display: block; }
+
+.faq-form-submit {
+  width: 100%;
+  margin-top: 5px;
+  padding: 12px 14px;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: inherit;
+  color: #ffffff;
+  background: #2b5fd0;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.faq-form-submit:hover { background: #0f2a5e; }
+.faq-form-submit:disabled { opacity: 0.6; cursor: default; }
+
+.faq-form-note {
+  margin-top: 9px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #566175;
 }
 
 /* ---------- Quick-reply chips ---------- */
@@ -589,7 +704,7 @@
     max-width: calc(100vw - 88px);
   }
   .faq-chat-header { padding: 12px 10px 12px 14px; gap: 9px; }
-  .faq-header-logo { height: 30px; max-width: 116px; }
+  .faq-header-logo { height: 32px; max-width: 82px; }
   .faq-header-phone span { display: none; } /* icon-only phone on small screens */
   .faq-header-phone { padding: 8px; }
   .faq-chat-messages { padding: 16px 12px 6px; }

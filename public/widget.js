@@ -306,6 +306,11 @@
     for (const raw of text.split("\n")) {
       const line = raw.trim();
       if (line === "") { html += '<div class="faq-sp"></div>'; continue; }
+      // "## Heading" -> a section label, so a long quote reads as grouped
+      // blocks instead of one undifferentiated list.
+      if (line.startsWith("## ")) { html += '<div class="faq-sec">' + inline(line.slice(3)) + "</div>"; continue; }
+      // ">> ..." -> the grand total, rendered as a solid callout panel.
+      if (line.startsWith(">> ")) { html += '<div class="faq-total">' + inline(line.slice(3)) + "</div>"; continue; }
       if (line.startsWith("•")) { html += '<div class="faq-li">' + inline(line) + "</div>"; continue; }
       if (/^\*\*.*\*\*:?$/.test(line)) { html += '<div class="faq-h">' + inline(line) + "</div>"; continue; }
       html += '<div class="faq-p">' + inline(line) + "</div>";
@@ -352,6 +357,117 @@
     });
     messagesContainer.appendChild(wrap);
     scrollToBottom();
+  }
+
+  // The four contact details, asked as ONE form instead of four separate
+  // questions. Each of those used to cost a full round-trip to the model, so
+  // this is the single biggest saving in how long the flow takes to complete —
+  // and the customer can see everything they're being asked for at once.
+  const CONTACT_FIELDS = [
+    { key: "name", label: "Név", type: "text", ph: "Kovács Anna", auto: "name",
+      err: "Kérjük, adja meg a nevét.",
+      ok: (v) => v.trim().length >= 2 },
+    { key: "email", label: "E-mail", type: "email", ph: "anna@example.hu", auto: "email",
+      err: "Ez az e-mail cím nem tűnik helyesnek.",
+      ok: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) },
+    { key: "phone", label: "Telefonszám", type: "tel", ph: "+36 30 123 4567", auto: "tel",
+      err: "Kérjük, adjon meg egy elérhető telefonszámot.",
+      ok: (v) => (v.replace(/\D/g, "").length >= 7) },
+    { key: "postal_code", label: "Irányítószám", type: "text", ph: "1117", auto: "postal-code",
+      err: "Az irányítószám 4 számjegy.",
+      ok: (v) => /^\d{4}$/.test(v.trim()) },
+  ];
+
+  function renderContactForm() {
+    clearChips();
+    const form = document.createElement("form");
+    form.className = "faq-chips faq-form"; // faq-chips so clearChips() removes it
+    form.noValidate = true;
+
+    const title = document.createElement("div");
+    title.className = "faq-form-title";
+    title.textContent = "Hova küldjük az árajánlatot?";
+    form.appendChild(title);
+
+    const inputs = {};
+    CONTACT_FIELDS.forEach((f) => {
+      const row = document.createElement("div");
+      row.className = "faq-form-row";
+
+      const id = "faq-f-" + f.key;
+      const label = document.createElement("label");
+      label.setAttribute("for", id);
+      label.textContent = f.label;
+
+      const input = document.createElement("input");
+      input.id = id;
+      input.type = f.type;
+      input.placeholder = f.ph;
+      input.autocomplete = f.auto;
+      if (f.key === "postal_code") { input.inputMode = "numeric"; input.maxLength = 4; }
+
+      const err = document.createElement("div");
+      err.className = "faq-form-err";
+      err.textContent = f.err;
+
+      // Clear the error as soon as they start fixing it.
+      input.addEventListener("input", () => {
+        row.classList.remove("showerr");
+        input.classList.remove("invalid");
+      });
+
+      row.appendChild(label);
+      row.appendChild(input);
+      row.appendChild(err);
+      form.appendChild(row);
+      inputs[f.key] = { input, row };
+    });
+
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.className = "faq-form-submit";
+    submit.textContent = "Árajánlat kérése";
+    form.appendChild(submit);
+
+    const note = document.createElement("div");
+    note.className = "faq-form-note";
+    note.textContent =
+      "Az adatait csak az árajánlat elküldéséhez és a felmérés egyeztetéséhez használjuk.";
+    form.appendChild(note);
+
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      if (sending) return;
+
+      let firstBad = null;
+      const values = {};
+      CONTACT_FIELDS.forEach((f) => {
+        const { input, row } = inputs[f.key];
+        const v = input.value;
+        if (!f.ok(v)) {
+          row.classList.add("showerr");
+          input.classList.add("invalid");
+          if (!firstBad) firstBad = input;
+        } else {
+          values[f.key] = v.trim();
+        }
+      });
+      if (firstBad) { firstBad.focus(); return; }
+
+      // Write the answers straight into the carried state. The backend merges
+      // this, sees the quote is complete, and returns it without another model
+      // call — so submitting the form goes straight to the price.
+      convState = Object.assign({}, convState, values);
+      submit.disabled = true;
+      sendMessage(
+        `${values.name} · ${values.email} · ${values.phone} · ${values.postal_code}`
+      );
+    };
+
+    messagesContainer.appendChild(form);
+    scrollToBottom();
+    const first = inputs.name && inputs.name.input;
+    if (first) setTimeout(() => first.focus(), 120);
   }
 
   // After the quote is shown, offer to e-mail it to the customer.
@@ -501,6 +617,10 @@
       if (data.emailOffer && data.lead) {
         lastLead = data.lead;
         renderEmailOffer();
+        setInputMode(false);
+      } else if (data.contactForm) {
+        // Project questions done — collect all four contact details at once.
+        renderContactForm();
         setInputMode(false);
       } else {
         renderChips(data.chips);

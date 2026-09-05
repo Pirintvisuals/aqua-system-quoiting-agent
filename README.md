@@ -25,7 +25,18 @@ same flow. What differs is listed under **Aqua System changes** below.
    toward combi vs. 46 L vs. 125 L storage, and the owner sees it on the lead.
 4. **"Hány év garancia kell?"** — a new question (`warranty`). 2 years is the
    free factory baseline; 5 and 10 years carry a surcharge.
-5. **Branding** — Aqua System logo (`public/logo.webp`), blue `#2b5fd0` / navy
+5. **One form instead of four questions.** Name / e-mail / phone / postal code
+   used to be four separate round-trips to the model. The backend now sets
+   `contactForm: true` on the turn they come due, the widget renders all four as
+   one validated form, and submitting it completes the state — so the quote comes
+   back **without calling the model at all** (~0.4s, versus four further model
+   turns).
+6. **The quote reads as a document, not a wall of bullets.** The breakdown is
+   grouped into sections (készülék / kémény / bontás / szerelés / garancia), the
+   total is a highlighted callout, and two new blocks spell out what the price
+   **does** and **does not** cover, followed by a "mi történik ezután" step list.
+   `## ` and `>> ` in a bot message render as a section heading and the total.
+7. **Branding** — Aqua System logo (`public/logo.webp`), blue `#2b5fd0` / navy
    `#0f2a5e` palette, phone `+36 20 399 0093`, e‑mail
    `keszulekcsere@aqua-system.hu`, and a knowledge base rewritten around the
    one‑day replacement, ~50 years of experience, 500+ jobs, fixed price after

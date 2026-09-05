@@ -86,28 +86,39 @@ function formatHuf(n) {
 }
 
 // Build the itemised quote deterministically from the AI's structured answers.
+// Which block of the breakdown a line belongs to, in the order they are shown.
+// Grouping the items turns a flat wall of nine bullets into something the
+// customer can actually scan.
+const SECTIONS = [
+    ["keszulek", "A készülék"],
+    ["kemeny", "Kémény és égéstermék-elvezetés"],
+    ["bontas", "Bontás és elszállítás"],
+    ["szereles", "Szerelés és üzembe helyezés"],
+    ["garancia", "Garancia"],
+];
+
 function buildQuote(sel) {
     const items = [];
-    const add = (entry) => { if (entry) items.push({ label: entry.label, huf: entry.huf }); };
+    const add = (entry, sec) => { if (entry) items.push({ label: entry.label, huf: entry.huf, sec }); };
 
     // The new-vs-replacement question was removed; we always quote the full
     // job (current boiler handling + demolition included). "nem_tudom" answers
     // fall back to the cheapest variant of each field.
     const isReplacement = true;
 
-    add(PRICES.old_boiler[sel.old_boiler] || PRICES.old_boiler.nem_tudom);
-    add(PRICES.new_boiler[sel.new_boiler] || PRICES.new_boiler.nem_tudom);
-    add(PRICES.flue[sel.flue] || PRICES.flue.nem_tudom);
+    add(PRICES.old_boiler[sel.old_boiler] || PRICES.old_boiler.nem_tudom, "bontas");
+    add(PRICES.new_boiler[sel.new_boiler] || PRICES.new_boiler.nem_tudom, "keszulek");
+    add(PRICES.flue[sel.flue] || PRICES.flue.nem_tudom, "kemeny");
     // A hagyományos készülék kéménye nem alkalmas kondenzációs kazánhoz — ilyenkor
     // saválló bélelés / kéményátalakítás is kell. Kondenzációs cserénél nem.
-    if (sel.old_boiler === "hagyomanyos") add(PRICES.chimney_conversion);
-    add(PRICES.rcd[sel.rcd] || PRICES.rcd.nem_tudom);
-    add(PRICES.warranty[sel.warranty] || PRICES.warranty.nem_tudom);
+    if (sel.old_boiler === "hagyomanyos") add(PRICES.chimney_conversion, "kemeny");
+    add(PRICES.rcd[sel.rcd] || PRICES.rcd.nem_tudom, "szereles");
+    add(PRICES.warranty[sel.warranty] || PRICES.warranty.nem_tudom, "garancia");
 
     // Standard costs — always included (not asked).
-    add(PRICES.standard.wet_system);
-    add(PRICES.standard.commissioning);
-    add(PRICES.demolition);
+    add(PRICES.standard.wet_system, "szereles");
+    add(PRICES.standard.commissioning, "szereles");
+    add(PRICES.demolition, "bontas");
 
     const total = items.reduce((s, i) => s + i.huf, 0);
     return { items, total, isReplacement };
@@ -317,40 +328,79 @@ function sanitizeChoices(s) {
 // Customer-facing estimate. Returns sections split by [[SPLIT]] so the widget
 // renders them as separate, easy-to-read chat bubbles. Numbers come from buildQuote.
 function renderCustomerQuote(quote, sel) {
-    const items = quote.items.map(i => `• ${i.label} — **${formatHuf(i.huf)}**`).join("\n");
+    // --- Bubble 1: the itemised price, grouped into scannable sections -------
+    const priceLines = [`Köszönöm, ${sel.name || ""}! Íme az előzetes árajánlata.`, ``];
+    for (const [key, title] of SECTIONS) {
+        const rows = quote.items.filter(i => i.sec === key);
+        if (!rows.length) continue;
+        priceLines.push(`## ${title}`);
+        rows.forEach(i => priceLines.push(`• ${i.label} — **${formatHuf(i.huf)}**`));
+        priceLines.push(``);
+    }
+    priceLines.push(`>> Becsült végösszeg: ${formatHuf(quote.total)}`);
+    priceLines.push(`Bruttó ár, ÁFÁ-val — a készülékkel és a teljes beépítéssel együtt.`);
+    const priceBubble = priceLines.join("\n");
 
-    // Bubble 1 — the price
-    const priceBubble = [
-        `Köszönöm, ${sel.name || ""}! Íme az előzetes árajánlata. 🙏`,
-        ``,
-        `**Tételek:**`,
-        items,
-        ``,
-        `**Becsült végösszeg: ${formatHuf(quote.total)}** (bruttó, ÁFÁ-val)`,
-    ].join("\n");
+    // --- Bubble 2: what the price covers, and what it deliberately doesn't ---
+    // The exclusions matter as much as the number: they are what stops the
+    // survey turning into an argument about a figure the customer anchored on.
+    const included = [
+        `A kondenzációs gázkészülék ára`,
+        `A teljes beszerelés és a gyári üzembe helyezés`,
+        `A régi készülék bontása és elszállítása`,
+        `Vizes rendszerre kötés mágneses iszapleválasztóval`,
+    ];
+    if (sel.old_boiler === "hagyomanyos") {
+        included.push(`Kéményátalakítás saválló béléscsővel`);
+    }
+    included.push(`${lbl("warranty", sel.warranty)} garancia a készülékre`);
+    included.push(`Ügyintézés és a dokumentált beüzemelés`);
 
-    // Bubble 2 — "just an estimate" note
+    const excluded = [
+        `Gázvezeték áthelyezése vagy cseréje`,
+        `Radiátorcsere és a fűtési rendszer állapotától függő pótmunka`,
+        `Bontás utáni faljavítás, burkolás, festés`,
+        `Társasházi engedélyeztetés külön díja, ha a ház ilyet kér`,
+        `Egyedi, nem szabványos kéménymegoldás`,
+    ];
+
     const noteBubble = [
-        `ℹ️ Ez csak egy **előzetes, tájékoztató becslés** — a végleges ár a helyszíni felmérés után pontosul.`,
-        `Az ár tartalmazza a kazánt és a teljes beépítést; a pontos márka/típus a felmérésnél dől el.`,
+        `## Az árban benne van`,
+        ...included.map(x => `• ${x}`),
+        ``,
+        `## Az árban nincs benne`,
+        ...excluded.map(x => `• ${x}`),
+        ``,
+        `Ez **előzetes, tájékoztató becslés**. A végleges, fix árat a helyszíni felmérés után adjuk meg — utólagos ráfizetés nélkül.`,
     ].join("\n");
 
-    // Bubble 3 — recap of everything the customer said
-    const recapLines = [`**Az Ön válaszai:**`];
-    recapLines.push(`• Leszerelendő készülék: ${lbl("old_boiler", sel.old_boiler)}`);
-    recapLines.push(`• Lakók száma: ${lbl("occupants", sel.occupants)}`);
-    recapLines.push(`• Új kazán: ${lbl("new_boiler", sel.new_boiler)}`);
-    recapLines.push(`• Kémény: ${lbl("flue", sel.flue)}`);
-    recapLines.push(`• Életvédelmi (Fi) relé: ${lbl("rcd", sel.rcd)}`);
-    recapLines.push(`• Kért garancia: ${lbl("warranty", sel.warranty)}`);
-    recapLines.push(`• Név: ${sel.name || "—"}`);
-    recapLines.push(`• E-mail: ${sel.email || "—"}`);
-    recapLines.push(`• Telefon: ${sel.phone || "—"}`);
-    recapLines.push(`• Irányítószám: ${sel.postal_code || "—"}`);
-    recapLines.push(`• Tervezett keret: ${lbl("budget", sel.budget)}`);
-    recapLines.push(`• Tervezett kivitelezés: ${lbl("timeline", sel.timeline)}`);
-    recapLines.push(``);
-    recapLines.push(`Az adatait továbbítottuk az Aqua System csapatához — hamarosan keressük! 📞 +36 20 399 0093`);
+    // --- Bubble 3: recap of the answers + what happens next -----------------
+    const recapLines = [
+        `## A munka`,
+        `• Leszerelendő készülék: **${lbl("old_boiler", sel.old_boiler)}**`,
+        `• Lakók száma: **${lbl("occupants", sel.occupants)}**`,
+        `• Új kazán: **${lbl("new_boiler", sel.new_boiler)}**`,
+        `• Kémény: **${lbl("flue", sel.flue)}**`,
+        `• Életvédelmi (Fi) relé: **${lbl("rcd", sel.rcd)}**`,
+        `• Kért garancia: **${lbl("warranty", sel.warranty)}**`,
+        ``,
+        `## Ütemezés`,
+        `• Tervezett keret: **${lbl("budget", sel.budget)}**`,
+        `• Tervezett kivitelezés: **${lbl("timeline", sel.timeline)}**`,
+        ``,
+        `## Az Ön adatai`,
+        `• Név: **${sel.name || "—"}**`,
+        `• E-mail: **${sel.email || "—"}**`,
+        `• Telefon: **${sel.phone || "—"}**`,
+        `• Irányítószám: **${sel.postal_code || "—"}**`,
+        ``,
+        `## Mi történik ezután`,
+        `• Kollégánk **hamarosan felhívja** a megadott számon.`,
+        `• Egyeztetünk egy **ingyenes helyszíni felmérést**.`,
+        `• A felmérés után **fix, végleges árat** kap, és jöhet az **egynapos csere**.`,
+        ``,
+        `Ha addig kérdése van, hívjon: **+36 20 399 0093**`,
+    ];
     if (EMAIL_OFFER_ENABLED) {
         recapLines.push(``);
         recapLines.push(`Szeretné, hogy e-mailben is elküldjük az ajánlatot?`);
@@ -402,11 +452,9 @@ KÉRDÉSEK SORRENDJE (egyesével, mindig csak EGY kérdés!). ELŐSZÖR a projek
 7. budget — "Nagyjából milyen összeget szánna a beruházásra?" RÖVIDEN kérdezz, NE sorold fel a sávokat szövegben — a választógombokat a rendszer megjeleníti alattuk. A sávok (csak a te tudásodra): 1 millió Ft alatt → b_1m; 1–1,5 millió Ft → b_1_1_5; 1,5–2 millió Ft → b_1_5_2; 2 millió Ft felett → b_2m; "Még nem tudom" → b_unsure. Ha az ügyfél konkrét számot mond, sorold be a megfelelő sávba.
 8. timeline — "Mikorra szeretné a kivitelezést?" RÖVIDEN kérdezz, a gombokat a rendszer megjeleníti. Lehetőségek (csak a te tudásodra): Amint lehet → t_asap; Egy hónapon belül → t_month; Fél éven belül → t_halfyear; Még idén → t_thisyear; "Még nem tudom" → t_unsure. Az ügyfél szabad szöveggel is válaszolhat — sorold be a legközelebbi lehetőségre.
 
-ELÉRHETŐSÉGEK — CSAK a 8. kérdés UTÁN, a projektkérdések végén kérd el ezeket, az árajánlat elküldéséhez és a visszahíváshoz. A 9. kérdés ELŐTT írj egy rövid átvezető mondatot, pl.: "Köszönöm! Hogy elküldhessük a személyre szabott árajánlatot és felvehessük Önnel a kapcsolatot, kérek még pár adatot." Utána KÜLÖN-KÜLÖN, egyesével kérdezd (a 9–12. szabad szöveg, ezeknél NINCS gomb), és minden kérdésnél mondd meg RÖVIDEN, miért kéred:
-9. name — "Kérem a nevét — kinek címezzük az árajánlatot?"
-10. email — "Mi az e-mail címe? Erre küldjük el az árajánlatot."
-11. phone — "Mi a telefonszáma? Ezen a számon hívjuk vissza a részletekkel."
-12. postal_code — "Mi az irányítószáma? Ez alapján tudjuk a kiszállást/felmérést egyeztetni."
+ELÉRHETŐSÉGEK — a 8. kérdés UTÁN. FONTOS: a négy elérhetőségi adatot a RENDSZER kéri be EGYETLEN ŰRLAPON, közvetlenül a te válaszod alatt. Ezért a 8. kérdés után CSAK EGY rövid átvezető mondatot írj, és NE tedd fel egyesével a 9–12. kérdést, NE kérdezd külön a nevet. Példa a teljes válaszodra: "Köszönöm, minden megvan a kalkulációhoz! Már csak az elérhetőségei kellenek, hogy elküldhessük a személyre szabott árajánlatot és egyeztethessük az ingyenes felmérést."
+A mezők, amiket az űrlap bekér (csak a te tudásodra): 9. name, 10. email, 11. phone, 12. postal_code.
+KIVÉTEL: ha az ügyfél mégis egyesével, szabad szöveggel válaszol (mert nem az űrlapot használja), akkor kérdezd a soron következő hiányzó adatot egyesével, röviden megindokolva, miért kéred.
 
 MEGJEGYZÉS: A vizes rendszerre kötést, a gyári üzembe helyezést és a régi kazán/kémény bontását NE kérdezd meg — ezek minden ajánlatban benne vannak, a rendszer automatikusan hozzáadja. A kéményátalakítást se kérdezd külön: ha az 1. kérdésre "hagyományos" a válasz, a rendszer magától hozzáadja.
 
@@ -494,6 +542,36 @@ async function callGemini(messages) {
     }
 }
 
+// Price, log, notify and render the finished quote. Shared by the fast path
+// (contact form completed the state) and the normal end-of-conversation turn.
+async function finishWithQuote(sel, response, progressTotal) {
+    const quote = buildQuote(sel);
+
+    console.log("\n========================================");
+    console.log("ÚJ ÁRAJÁNLAT / LEAD");
+    console.log(`Ügyfél: ${sel.name} | ${sel.phone} | ${sel.email}`);
+    console.log(`Irsz.: ${sel.postal_code} | Keret: ${sel.budget}`);
+    console.log(`Becsült végösszeg: ${formatHuf(quote.total)}`);
+    console.log("========================================\n");
+
+    // Always notify the owner + log the lead into the Google Sheet.
+    // Run both in parallel; neither blocks the other or the response.
+    await Promise.all([
+        sendQuoteEmail(sel, quote, { to: process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com", toCustomer: false }),
+        sendLeadToSheet(sel, quote),
+    ]);
+
+    return response.status(200).json({
+        answer: renderCustomerQuote(quote, sel),
+        chips: [],
+        emailOffer: EMAIL_OFFER_ENABLED,
+        lead: { sel, quote },
+        state: sel,
+        progress: progressTotal,
+        progressTotal,
+    });
+}
+
 // ---------------------------------------------------------------------------
 //  Handler
 // ---------------------------------------------------------------------------
@@ -521,6 +599,38 @@ export default async function handler(request, response) {
                     : `Sajnos most nem sikerült e-mailt küldeni, de kollégánk hamarosan keresi Önt. 📞 +36 20 399 0093`,
                 chips: [],
             });
+        }
+
+        const progressTotal = PROGRESS_FIELDS.length;
+
+        // --- STATE, assembled BEFORE the model is called -------------------
+        // The widget carries the accumulated state back to us each turn, so we
+        // can work out what the customer just answered without the model's
+        // help. (history DATA blocks are merged as a harmless fallback.)
+        const priorSel = Array.isArray(history)
+            ? history
+                .filter((m) => m && (m.role === "assistant" || m.role === "model"))
+                .map((m) => extractData(m.content))
+            : [];
+        const baseSel = mergeState(state, ...priorSel);
+
+        // Deterministically record the answer the customer just gave into the
+        // field they were being asked — so the chips advance immediately and
+        // don't lag a step behind the model's (one-turn-late) state block.
+        const determined = {};
+        const pending = pendingField(baseSel);
+        if (pending) {
+            const v = mapAnswer(pending, question);
+            if (v) determined[pending] = v;
+        }
+
+        // FAST PATH: everything needed is already known (the contact form fills
+        // the last four fields in one go). There is nothing left for the model
+        // to ask, so skip the API call entirely — it saves a round-trip the
+        // customer would otherwise wait through, and a request we'd pay for.
+        const earlySel = mergeState(baseSel, determined);
+        if (isQuoteReady(earlySel)) {
+            return await finishWithQuote(earlySel, response, progressTotal);
         }
 
         // Normalized message list: [{ role: "system"|"user"|"assistant", content }]
@@ -562,31 +672,6 @@ export default async function handler(request, response) {
             aiAnswer = aiAnswer.replace(/<!--DATA:.*?-->/s, "").trim();
         }
 
-        // ... then merge it onto the accumulated state. The widget carries this
-        // state back to us each turn (`state`), because the chat history it stores
-        // has the DATA block stripped out — so a single turn that drops a field
-        // can never wipe an answer the customer already gave. Chips + completion
-        // are decided from this stable, accumulated state, not one model turn.
-        // (history DATA blocks are also merged as a harmless fallback.)
-        const priorSel = Array.isArray(history)
-            ? history
-                .filter((m) => m && (m.role === "assistant" || m.role === "model"))
-                .map((m) => extractData(m.content))
-            : [];
-
-        // Accumulated state BEFORE this turn's answer is applied.
-        const baseSel = mergeState(state, ...priorSel);
-
-        // Deterministically record the answer the customer just gave into the
-        // field they were being asked — so the chips advance immediately and
-        // don't lag a step behind the model's (one-turn-late) state block.
-        const determined = {};
-        const pending = pendingField(baseSel);
-        if (pending) {
-            const v = mapAnswer(pending, question);
-            if (v) determined[pending] = v;
-        }
-
         // Final state, by ascending trust: the model's own block (currentSel)
         // is LEAST trusted — it can hallucinate or drop fields — so it only
         // fills genuine gaps. The accumulated state (baseSel) overrides it, and
@@ -598,39 +683,13 @@ export default async function handler(request, response) {
         // Progress for the widget's progress bar: how many of the PROJECT
         // questions are answered (contact details are not counted, so the bar
         // reaches 100% just before we ask for them).
-        const progressTotal = PROGRESS_FIELDS.length;
         const progress = PROGRESS_FIELDS.filter(
             (f) => sel[f] != null && String(sel[f]).trim() !== ""
         ).length;
 
         // --- COMPLETION CHECK (backend-decided, model-independent) ---
         if (isQuoteReady(sel)) {
-            const quote = buildQuote(sel);
-
-            console.log("\n========================================");
-            console.log("🎯 ÚJ ÁRAJÁNLAT / LEAD");
-            console.log(`Ügyfél: ${sel.name} | ${sel.phone} | ${sel.email}`);
-            console.log(`Irsz.: ${sel.postal_code} | Keret: ${sel.budget}`);
-            console.log(`Becsült végösszeg: ${formatHuf(quote.total)}`);
-            console.log("========================================\n");
-
-            // Always notify the owner + log the lead into the Google Sheet.
-            // Run both in parallel; neither blocks the other or the response.
-            await Promise.all([
-                sendQuoteEmail(sel, quote, { to: process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com", toCustomer: false }),
-                sendLeadToSheet(sel, quote),
-            ]);
-
-            // Show the itemised quote in chat + offer to e-mail it to the customer.
-            return response.status(200).json({
-                answer: renderCustomerQuote(quote, sel),
-                chips: [],
-                emailOffer: EMAIL_OFFER_ENABLED,
-                lead: { sel, quote },
-                state: sel,
-                progress: progressTotal,
-                progressTotal,
-            });
+            return await finishWithQuote(sel, response, progressTotal);
         }
 
         // Strip any chips marker the model may still emit (we compute chips ourselves).
@@ -639,7 +698,12 @@ export default async function handler(request, response) {
         // --- QUICK-REPLY CHIPS (backend-decided, reliable) ---
         const chips = nextChips(sel);
 
-        return response.status(200).json({ answer: aiAnswer, chips, state: sel, progress, progressTotal });
+        // The project questions are done and the contact details are next. Tell
+        // the widget to render all four as a single form rather than making the
+        // customer answer four separate questions.
+        const contactForm = pendingField(sel) === "name";
+
+        return response.status(200).json({ answer: aiAnswer, chips, contactForm, state: sel, progress, progressTotal });
 
     } catch (error) {
         console.error("Function Crash:", error.message);
