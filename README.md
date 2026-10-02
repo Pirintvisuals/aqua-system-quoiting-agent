@@ -1,200 +1,171 @@
 # Aqua System — Árajánló chat widget
 
 A Hungarian gas‑boiler quoting chat widget for **Aqua System Service Kft.**
-(egynapos gázkészülék csere, Budapest és agglomeráció). The customer answers a
-short set of questions (clicking suggested options **or** typing freely), gives
-their contact details, then immediately sees an itemised estimate. The company
-owner receives the same quote + the customer's details by e‑mail.
+(egynapos gázkészülék csere, Budapest és agglomeráció). The customer answers
+five short questions (clicking buttons **or** typing freely), can attach photos
+of the old boiler, gives a phone number, and immediately sees an itemised
+**induló ár** (floor price) with everything that could be added on top spelled
+out. Under the quote they can pick a warranty and request a survey slot. The
+owner gets the lead by e‑mail with the photos attached, and a second e‑mail
+when a survey slot is requested.
 
-Forked from the *Kazán Kecskemét* (gazszerelokecskemet) widget — same engine,
-same flow. What differs is listed under **Aqua System changes** below.
+Forked from the *Kazán Kecskemét* (gazszerelokecskemet) widget.
+
+> **Prices to confirm with the client.** The **chimney conversion
+> (260 000 Ft)** and the **extended warranty (5 év +60 000 / 10 év +150 000)**
+> are placeholders. Replace them with Aqua System's own numbers in `PRICES`.
 
 ---
 
-## Aqua System changes vs. the Kecskemét version
+## The flow (v2, 2026-10-02)
 
-1. **Only condensing boilers.** Every `new_boiler` option is condensing, and the
-   assistant explains that Aqua System does not fit open‑flue or turbo units.
-2. **"Mit kell leszerelni?"** replaces the old *"Milyen kazánja van most?"*
-   question. Two answers: **kondenzációs** or **hagyományos**. If the old unit is
-   **hagyományos**, the existing chimney is not suitable for a condensing boiler,
-   so a `chimney_conversion` line (saválló béléscső) is added automatically —
-   the customer is never asked about it.
-3. **"Hányan laknak a lakásban?"** — a new question (`occupants`). It carries no
-   price; it sizes the hot‑water demand, so the assistant can steer the customer
-   toward combi vs. 46 L vs. 125 L storage, and the owner sees it on the lead.
-4. **"Hány év garancia kell?"** — a new question (`warranty`). 2 years is the
-   free factory baseline; 5 and 10 years carry a surcharge.
-5. **One form instead of four questions.** Name / e-mail / phone / postal code
-   used to be four separate round-trips to the model. The backend now sets
-   `contactForm: true` on the turn they come due, the widget renders all four as
-   one validated form, and submitting it completes the state — so the quote comes
-   back **without calling the model at all** (~0.4s, versus four further model
-   turns).
-6. **Every question is scannable, not a run-on sentence.** The prompt carries a
-   `FORMÁZÁS` block the model must follow: a one-word acknowledgement, then the
-   question itself in **bold** on its own line, then at most three `•` bullets
-   whose key term is bolded. Questions whose chips speak for themselves (budget,
-   timeline) get no bullets at all. The greeting sets expectations the same way
-   — 8 questions, about a minute, price at the end.
-7. **The quote reads as a document, not a wall of bullets.** The breakdown is
-   grouped into sections (készülék / kémény / bontás / szerelés / garancia), the
-   total is a highlighted callout, and two new blocks spell out what the price
-   **does** and **does not** cover, followed by a "mi történik ezután" step list.
-   `## ` and `>> ` in a bot message render as a section heading and the total.
-8. **Branding** — Aqua System logo (`public/logo.webp`), blue `#2b5fd0` / navy
-   `#0f2a5e` palette, phone `+36 20 399 0093`, e‑mail
-   `keszulekcsere@aqua-system.hu`, and a knowledge base rewritten around the
-   one‑day replacement, ~50 years of experience, 500+ jobs, fixed price after
-   survey, and full permit handling.
+1. **Mit kell leszerelni?** kondenzációs / hagyományos / nem tudom
+2. **Hányan laknak a lakásban?** sizes the hot-water demand
+3. **Milyen új készüléket szeretne?** the button that fits the household is
+   highlighted as *ajánlott* (1–2 fő: kombi, 3–4: tárolós 46 l, 5+: külső 125 l)
+4. **Hova vezet most a kazán füstcsöve?** tető / tégla kémény / gyűjtőkémény
+5. **Lefotózná a mostani kazánt?** optional, up to 3 photos, or *Kihagyom*
+6. **Mikorra szeretné a cserét?**
+7. One contact form: name, phone, postal code, e‑mail (**optional**)
+8. The quote, then a panel with **warranty** (2 / 5 / 10 év, the price bubble
+   updates in place), **survey booking** (next 8 working days × délelőtt /
+   délután / bármikor) and, if enabled, **e‑mail me the quote**
 
-> **Prices to confirm.** Everything except two lines is carried over from the
-> Kecskemét price sheet. The **chimney conversion (260 000 Ft)** and the
-> **extended warranty (5 év +60 000 / 10 év +150 000)** are placeholders —
-> replace them with Aqua System's own numbers in `PRICES`.
+What changed from v1, and why:
+
+| Change | Why |
+|---|---|
+| Button clicks are answered from **templates in the backend**, no AI call | Every click used to wait 1–3 s for the model. Now it is instant and costs nothing. The model only runs when the customer types something we can't map. |
+| Short typed answers are mapped too ("4", "kombi", "régi turbós", "minél hamarabb") | Same speed for people who type instead of clicking. Questions ("mi a különbség…?") still go to the model. |
+| **Budget** question removed | The lowest band ("1 millió alatt") was below the cheapest possible quote, and it was asked before the customer had seen any price. |
+| **Fi-relé** question removed | Laypeople can't answer it. The floor price assumes "van"; "nincs" is listed as a +50 000 Ft surcharge. |
+| **Warranty** moved onto the quote | It is an upsell. It sells better next to the price than as question 6. |
+| **Photo step** added | The owner sees the boiler and flue before calling, so many visits can be prepared or judged in advance. |
+| **Floor price** ("Induló ár: X Ft-tól") + named surcharges | A single "becsült végösszeg" anchors the customer low; every "Nem tudom" now shows exactly what the dearer variant adds. |
+| **E‑mail optional** | The owner calls; every extra required field loses people. |
+| **Survey booking** under the quote | Turns a quote into an appointment. It is a *request*, confirmed by phone; there is no live calendar. |
+| **Service area check** (postal code) | Outside Budapest + agglomeráció the customer gets a soft note and the owner e‑mail a red flag. Never blocks the quote. Edit `AGGLO_POSTAL_CODES`. |
+| **Owner e‑mail**: call button, *Sürgős* flag (timeline = amint lehet), area flag, photos attached, surcharges the customer was told | Built to be read on a phone between jobs. |
+| Chat **survives reloads** and navigation (sessionStorage) | A half-finished quote no longer disappears when the visitor clicks to another page. The teaser then says "Folytassa az árajánlatot". |
+| **Deep link** `?ajanlat` / `#ajanlat` and `window.AquaWidget.open()` | For the Google Business Profile, ads, Facebook posts, QR codes. |
+| **Auto-open** option (`autoOpenDelay`) | Opens once per visit, desktop only. The website uses it on /kazancsere only. |
+| Post-quote actions **re-price on the server** and HTML-escape everything | The old `email_customer` action trusted a total and labels sent from the browser. |
+| If the AI is down, the current question is repeated **with its buttons** | The customer is never stuck on an error message. |
 
 ---
 
 ## How it works (architecture)
 
 ```
-public/widget.js   ──POST──►  api/faq-agent.js  ──►  OpenAI (model via .env)  = conversation only
-   (chat UI)                       │
-                                   ├──►  PRICES table  = deterministic price calc
-                                   └──►  Resend         = e-mail to owner
+public/widget.js   ──POST──►  api/faq-agent.js
+   (chat UI)                       ├── button / mappable answer → template, no AI call
+                                   ├── free text → OpenAI or Gemini (conversation only)
+                                   ├── PRICES table → deterministic price calc
+                                   └── Resend → owner e-mail (+ photos), Google Sheet
 ```
 
-**The AI never does arithmetic.** It only runs the Hungarian conversation and,
-once every answer is collected, emits a hidden JSON block of the customer's
-*choices* (not prices). The backend looks each choice up in the fixed `PRICES`
-table, sums it, and builds the quote. This is why the total can never be
-miscalculated by the model.
+**The AI never does arithmetic** and never decides when the quote is done.
+The backend keeps the state, decides which question is next (`FIELD_ORDER`),
+and prices the answers from `PRICES`.
+
+API actions (all `POST /api/faq-agent`):
+
+| Body | Does |
+|---|---|
+| `{ action: "start" }` | First question |
+| `{ question, history, state, photos? }` | One turn; `photos` only with the contact form |
+| `{ action: "set_warranty", warranty, lead }` | Re-prices with the chosen warranty |
+| `{ action: "book_survey", booking: { date, dayLabel, window }, lead }` | E‑mails the owner the requested slot |
+| `{ action: "email_customer", lead }` | Customer copy (only when `EMAIL_OFFER=on` and an e‑mail was given) |
 
 ---
 
 ## How the price is calculated
 
-All prices are in **HUF**, gross (ÁFA included), and include the appliance plus
-the full installation. The total is simply the sum of the applicable items
-below. Edit them in **one place**: the `PRICES` object at the top of
+All prices are **HUF, gross** (ÁFA included), appliance + full installation.
+Edit them in **one place**: `PRICES` at the top of
 [`api/faq-agent.js`](api/faq-agent.js).
 
-| # | Question | Options → amount added |
-|---|---|---|
-| 1 | **Mit kell leszerelni?** | kondenzációs +0 · hagyományos +60 000 **and** +260 000 kéményátalakítás |
-| 2 | **Hányan laknak a lakásban?** | 1–2 fő / 3–4 fő / 5+ — **no price**, sizing + lead info only |
-| 3 | **Új (kondenzációs) kazán** | kombi 24 kW +450 000 · tárolós 46 L +900 000 · külső 125 L +900 000 |
-| 4 | **Kémény / égéstermék‑elvezetés** | tetőn ki +380 000 · tégla kéménybe +600 000 · társasházi gyűjtőkémény +600 000 |
-| 5 | **Életvédelmi (Fi) relé** | van +50 000 · nincs +100 000 |
-| 6 | **Hány év garancia?** | 2 év +0 · 5 év +60 000 · 10 év +150 000 |
-| 7 | **Tervezett keret** | no price — lead qualification |
-| 8 | **Tervezett kivitelezés** | no price — lead qualification |
-| — | **Always added (not asked)** | vizes rendszerre kötés +300 000 · gyári üzembe helyezés +50 000 · régi kazán/kémény bontása +90 000 |
+| Line | Amount |
+|---|---|
+| Leszerelendő: kondenzációs / hagyományos | +0 / +60 000, and hagyományos adds **+260 000** kéményátalakítás |
+| Új kazán: kombi 24 kW / tárolós 46 l / külső 125 l | +450 000 / +900 000 / +900 000 |
+| Kémény: tetőn át / tégla kéménybe / gyűjtőkémény | +380 000 / +600 000 / +600 000 |
+| Fi-relé ellenőrzése, bekötése (always) | +50 000 (if there is none: +50 000 more, shown as a surcharge) |
+| Garancia: 2 / 5 / 10 év (picked on the quote) | +0 / +60 000 / +150 000 |
+| Always: vizes rendszer, üzembe helyezés, bontás | +300 000, +50 000, +90 000 |
 
-**Total = sum of the selected rows + the always‑added standard costs.**
-
-Every choice question also offers **"Nem tudom"**, which falls back to the
-cheapest assumption and is corrected at the site survey.
-
-### Decisions baked into the logic
-- **Prices are GROSS and include the appliance + full installation**
-  (`APPLIANCE_INCLUDED = true`).
-- **Standard costs** (wet‑system, commissioning, demolition) are always added and
-  never asked — the flow always quotes a replacement.
-- **Chimney conversion** is derived, not asked: it is added only when
-  `old_boiler === "hagyomanyos"`.
-- **Only 24 kW** appliances; exact brand/model is decided at the site survey.
-- **Contact details** are collected as a single form at the very end, once the
-  progress bar hits 100% — not one question at a time.
-
-### Quote delivery
-- The itemised estimate is **shown in the chat** as soon as all answers are in,
-  split into easy‑to‑read bubbles (price → "just an estimate" note → a recap of
-  everything the customer answered).
-- The **owner always** receives it by e‑mail (with the client's details).
-- The **customer is offered a button** to have the quote e‑mailed to *them* too
-  (off until a verified Resend domain exists — see `EMAIL_OFFER_ENABLED`).
-- Completion is decided by the **backend** (`isQuoteReady`) from a running hidden
-  state block the model maintains — so the quote always appears even if the model
-  phrasing varies. The model never computes the price.
+"Nem tudom" prices the cheapest variant **and** adds a surcharge line with the
+exact difference to the dearer one.
 
 ---
 
 ## Setup & deploy
 
-1. **Keys** — copy your secrets into `.env` (already git‑ignored):
-   - `OPENAI_API_KEY` — from <https://platform.openai.com/api-keys>
-   - `OPENAI_MODEL` — copy the exact model ID from your OpenAI dashboard. The
-     task is tiny, so the cheapest tier is plenty (e.g. `gpt-5.4-nano`, or
-     `gpt-5.4-mini`). The model never affects price accuracy — that's computed
-     in the backend.
-   - `RESEND_API_KEY` — free at <https://resend.com>
-   - `LEAD_EMAIL_TO` — where quotes are sent
-   - `LEAD_EMAIL_FROM` — leave as the `onboarding@resend.dev` test sender to start;
-     later verify your own domain in Resend and change it.
-2. **Run locally:** `node server.js` → <http://localhost:8891> (override with `PORT`)
-3. **Deploy (Vercel):** push the repo; set the same env vars in the Vercel
-   dashboard. `api/faq-agent.js` is the serverless endpoint, `public/` is static.
-4. **Embed on a site:**
+1. **Keys** in `.env` (git-ignored), see `.env.example`: `OPENAI_API_KEY`,
+   `OPENAI_MODEL`, `RESEND_API_KEY`, `LEAD_EMAIL_TO`, `LEAD_EMAIL_FROM`,
+   optionally `SHEETS_WEBHOOK_URL` and `EMAIL_OFFER`.
+2. **Run locally:** `node server.js` → <http://localhost:8891>.
+   **`node server.js --dry-run`** runs the whole flow without e‑mailing anyone
+   or writing to the Sheet. Analytics are off on localhost.
+3. **Deploy (Vercel):** push the repo; set the same env vars in the dashboard.
+4. **Customer copy of the quote:** verify the sending domain (aqua-system.hu)
+   in Resend, set `LEAD_EMAIL_FROM` to an address on it, then `EMAIL_OFFER=on`.
+5. **Embed on a site:**
    ```html
    <script>
      window.AQUA_CONFIG = {
        apiUrl: "https://YOUR-APP.vercel.app/api/faq-agent",
-       assetsUrl: "https://YOUR-APP.vercel.app"
+       assetsUrl: "https://YOUR-APP.vercel.app",
+       autoOpenDelay: 15000 // optional: open once per visit, desktop only
      };
    </script>
    <script src="https://YOUR-APP.vercel.app/widget.js"></script>
    ```
+   Any button can call `window.AquaWidget.open()`. A link ending in
+   `?ajanlat` or `#ajanlat` opens the chat straight away.
 
 ---
 
-## Leads → Google Sheet
+## Leads → Google Sheet (optional)
 
-Every completed lead is also appended as a row to a Google Sheet. This is
-**optional** — leave `SHEETS_WEBHOOK_URL` empty and the quote/e-mail flow still
-works exactly as before.
+Header row, in this order (the first 14 columns are unchanged from v1, so an
+existing sheet keeps working; v2 writes "nem kérdezett" into the two retired
+columns and appends two):
 
-Setup (one-time, ~3 minutes, no Google Cloud project needed):
+`Időbélyeg | Név | Telefon | E-mail | Irányítószám | Tervezett keret | Tervezett kivitelezés | Leszerelendő készülék | Lakók száma | Új kazán | Kémény | Életvédelmi relé | Kért garancia | Induló ár (Ft) | Fotók száma | Terület`
 
-1. Create a Google Sheet. In the first row, add these headers (this exact
-   order — it matches the `row` array in `sendLeadToSheet`):
+Apps Script (Extensions → Apps Script), deployed as a web app (*Execute as: Me*,
+*Who has access: Anyone*), URL into `SHEETS_WEBHOOK_URL`:
 
-   `Időbélyeg | Név | Telefon | E-mail | Irányítószám | Tervezett keret | Tervezett kivitelezés | Leszerelendő készülék | Lakók száma | Új kazán | Kémény | Életvédelmi relé | Kért garancia | Becsült végösszeg (Ft)`
+```javascript
+function doPost(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = JSON.parse(e.postData.contents);
+  sheet.appendRow(data.row);
+  return ContentService
+    .createTextOutput(JSON.stringify({ ok: true }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+```
 
-2. In that sheet: **Extensions → Apps Script**. Replace the contents with:
-
-   ```javascript
-   function doPost(e) {
-     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-     var data = JSON.parse(e.postData.contents);
-     sheet.appendRow(data.row);
-     return ContentService
-       .createTextOutput(JSON.stringify({ ok: true }))
-       .setMimeType(ContentService.MimeType.JSON);
-   }
-   ```
-
-3. **Deploy → New deployment → Web app.** Set *Execute as* = **Me**, and
-   *Who has access* = **Anyone**. Deploy, authorise, and copy the **Web app URL**
-   (ends in `/exec`).
-
-4. Paste that URL into `SHEETS_WEBHOOK_URL` in `.env` (and into the same env var
-   in the Vercel dashboard). Done — new leads now land in the sheet.
-
-> The sheet only fills in once the customer completes the whole flow (same point
-> the owner e-mail is sent). It runs in parallel with the e-mail, so neither
-> blocks the other.
+The warranty column records the choice at quote time; a later change arrives
+with the survey-booking e‑mail.
 
 ---
 
 ## Customising
 
-- **Prices:** edit the `PRICES` object in `api/faq-agent.js`.
-- **Questions / wording:** edit `SYSTEM_PROMPT` in `api/faq-agent.js`. If you add
-  or remove a question, update `PRICES`, `CHIP_MAP`, `CHIP_VALUES`, `LABELS`,
-  `FIELD_ORDER`, `PROGRESS_FIELDS`, `isQuoteReady`, the recap in
-  `renderCustomerQuote`, and the `row` array in `sendLeadToSheet` to match.
-- **Colours / branding:** `public/style.css` (brand blue `#2b5fd0`, navy
-  `#0f2a5e`, cyan `#7fc4e8`, sky `#eaf3ff`). The logo is `public/logo.webp`.
-- **Phone number / brand name:** `PHONE` and `BRAND` constants in
-  `public/widget.js`.
+- **Prices:** `PRICES` in `api/faq-agent.js`.
+- **Service area:** `AGGLO_POSTAL_CODES` in `api/faq-agent.js`.
+- **Questions / wording:** the templates in `questionText()`; the model's copy
+  in `SYSTEM_PROMPT`. Adding or removing a question means updating `CHIP_MAP`,
+  `CHIP_VALUES`, `SYNONYMS`, `LABELS`, `FIELD_ORDER`, `PROGRESS_FIELDS`,
+  `REQUIRED`, the recap in `renderCustomerQuote`, the sheet `row`, and the
+  `aqua-system` field list in the quoting-dashboard repo.
+- **Colours / branding:** `public/style.css`; logo `public/logo.webp`.
+- **Phone / brand name:** `PHONE` and `BRAND` in `public/widget.js`, `PHONE`
+  in `api/faq-agent.js`.
+- **Tests:** there is no test runner in the repo; the flow was checked with a
+  script that drives the handler end to end (all answers, quote, warranty,
+  booking, bad input, AI down).

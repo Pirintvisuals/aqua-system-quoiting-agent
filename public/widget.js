@@ -1,5 +1,9 @@
 (function () {
-  // Configuration with defaults for local development
+  // Configuration with defaults for local development.
+  //   apiUrl / assetsUrl  where the backend and the static files live
+  //   autoOpenDelay       ms after load to open the chat once per visit
+  //                       (desktop only); leave unset to never auto-open
+  //   client              PostHog `client` tag
   const config = window.AQUA_CONFIG || {};
   const apiUrl = config.apiUrl || "/api/faq-agent";
   const assetsUrl = config.assetsUrl || ""; // e.g. "https://your-app.vercel.app"
@@ -12,31 +16,37 @@
   let inputElement = null;
   let sending = false;
   let conversationHistory = []; // [{ role: "user"|"assistant", content: "..." }]
-  let convState = {}; // accumulated answer-state, carried turn-to-turn (chips/quote rely on it)
+  let convState = {}; // accumulated answer-state, carried turn-to-turn
   let started = false;
-  let lastLead = null; // { sel, quote } — held so the customer can request the e-mail
+  let lastLead = null; // { sel, quote } — needed for the post-quote actions
   let thinkingEl = null;
   let progressFillEl = null, progressLabelEl = null, progressBarEl = null;
-
+  let photoData = []; // compressed data URLs, sent with the contact form
   let container = null;
 
+  // What is rendered, so a page reload can rebuild the chat as it was.
+  let transcript = []; // [{ s: "bot"|"user", t: text, k?: "quote-price" }]
+  let ui = null;       // the controls currently under the last message
+  let progressSnap = null;
+
   // --- Analytics (PostHog) -------------------------------------------------
-  // Same PostHog project as the NM Bau widget; every event carries a `client`
-  // super-property so one dashboard splits the numbers per widget.
-  // No PII leaves the page: inputs are masked in replays, the customer's own
-  // bubbles are masked, and events only ever carry field NAMES / counts —
-  // never what was typed.
-  const POSTHOG_KEY = config.posthogKey || "phc_v8Kz9YKBCizrjV3vLzRxdiqvikGJpYy4FMET92Z8htpP";
+  // Every event carries a `client` super-property so one dashboard splits the
+  // numbers per widget. No PII: inputs and the customer's bubbles are masked
+  // in replays, and events only carry field NAMES / counts.
+  // Local test runs stay out of the real numbers unless a key is passed in.
+  const IS_LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const POSTHOG_KEY = config.posthogKey !== undefined ? config.posthogKey
+    : (IS_LOCAL ? "" : "phc_v8Kz9YKBCizrjV3vLzRxdiqvikGJpYy4FMET92Z8htpP");
   const POSTHOG_HOST = config.posthogHost || "https://eu.i.posthog.com";
   const CLIENT_ID = config.client || "aqua-system";
-  const WIDGET_VERSION = "2026-09-17";
+  const WIDGET_VERSION = "2026-10-02";
   const SESSION_REPLAY = config.sessionReplay !== false;
 
-  let filledFields = [];   // field names answered so far, in the order they were answered
-  let lastField = null;    // most recently answered field -> "where they stopped"
+  let filledFields = [];
+  let lastField = null;
   let lastProgress = 0, lastProgressTotal = 0;
   let quoteDone = false;
-  let turns = 0;           // messages the customer sent (typed or clicked)
+  let turns = 0;
 
   function track(event, props, options) {
     try {
@@ -53,12 +63,12 @@
     try {
       window.posthog.init(POSTHOG_KEY, {
         api_host: POSTHOG_HOST,
-        capture_pageview: false, // embedded widget, not a page view
-        autocapture: false,      // only our own named events
+        capture_pageview: false,
+        autocapture: false,
         disable_session_recording: !SESSION_REPLAY,
         session_recording: {
           maskAllInputs: true,
-          maskTextSelector: ".faq-msg.user .faq-bubble, .ph-no-capture",
+          maskTextSelector: ".faq-msg.user .faq-bubble, .faq-photo-thumbs, .ph-no-capture",
         },
       });
       window.posthog.register({
@@ -69,8 +79,7 @@
     } catch (e) {}
   }
 
-  // Compare the carried answer-state before/after a turn and emit one
-  // question_answered per newly filled field (names only, never values).
+  // One question_answered per newly filled field (names only, never values).
   function noteStateChange(prevState, data) {
     const isFilled = (s, k) => s && s[k] != null && String(s[k]).trim() !== "";
     const newly = Object.keys(convState || {}).filter(
@@ -83,15 +92,8 @@
     newly.forEach((field) => {
       filledFields.push(field);
       lastField = field;
-      track("question_answered", {
-        field,
-        step: filledFields.length,
-        answered: lastProgress,
-        total: lastProgressTotal,
-      });
+      track("question_answered", { field, step: filledFields.length, answered: lastProgress, total: lastProgressTotal });
     });
-    // Customer sent something but no field got filled: usually an off-script
-    // question (price, brands...), sometimes an answer the bot could not read.
     if (!newly.length && !data.lead) track("message_unmatched", { after_field: lastField, answered: lastProgress });
   }
 
@@ -106,7 +108,6 @@
     };
   }
 
-  // Tab closed / navigated away: the most reliable "where did they cut off".
   let leftSent = false;
   function onLeave() {
     if (leftSent || !started) return;
@@ -116,8 +117,37 @@
   window.addEventListener("pagehide", onLeave);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") onLeave();
-    else leftSent = false; // came back: allow a fresh snapshot next time
+    else leftSent = false;
   });
+
+  // --- Persistence -----------------------------------------------------------
+  // A reload or a click to another page of the site must not wipe a half
+  // finished quote. sessionStorage: survives navigation within the tab, gone
+  // when the tab closes. Every access is guarded — it can throw in private
+  // windows or with storage blocked, and the widget must work regardless.
+  const STORE_KEY = "aqua-chat-v2";
+  const PHOTO_KEY = "aqua-chat-v2-photos";
+
+  function save() {
+    try {
+      sessionStorage.setItem(STORE_KEY, JSON.stringify({
+        transcript, ui, convState, conversationHistory, lastLead, progressSnap,
+        quoteDone, filledFields, lastField, turns,
+      }));
+    } catch (e) {}
+  }
+  function savePhotos() {
+    try { sessionStorage.setItem(PHOTO_KEY, JSON.stringify(photoData)); } catch (e) {}
+  }
+  function load() {
+    try {
+      const raw = sessionStorage.getItem(STORE_KEY);
+      if (!raw) return null;
+      const d = JSON.parse(raw);
+      return d && Array.isArray(d.transcript) && d.transcript.length ? d : null;
+    } catch (e) { return null; }
+  }
+  const saved = load();
 
   // --- Inline SVG icons (no emojis used as UI icons) ---
   const ICON = {
@@ -128,14 +158,15 @@
     close: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
     check: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
     write: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+    camera: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+    calendar: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+    shield: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
   };
 
   function logoSrc() {
     return assetsUrl ? `${assetsUrl}/logo.webp` : "logo.webp";
   }
 
-  // Inject the widget stylesheet so it works on any site it's embedded on,
-  // not just the demo page.
   function injectStyles() {
     if (document.getElementById("faq-agent-styles")) return;
     const link = document.createElement("link");
@@ -162,19 +193,22 @@
     btn.onclick = toggleChat;
     container.appendChild(btn);
 
-    // Rotating teaser questions — cycled to spark engagement and show what the
-    // assistant can actually do. No emojis. Hungarian, boiler-focused.
-    const TEASERS = [
-      "Üdv! Kérjen pár kattintással ingyenes árajánlatot kazáncserére.",
-      "Egynapos gázkészülék csere. Nézze meg, mennyibe kerül.",
-      "Régi kazánját cserélné? Számoljon árat egy perc alatt.",
-      "Melyik kondenzációs kazán illik a lakásához? Segítek.",
-      "Kondenzációs kazán ára beszereléssel, nézze meg most.",
-      "Kérdése van a fűtésről? Írjon, azonnal válaszolok.",
-      "Csere egyetlen nap alatt. Kérjen árajánlatot itt.",
-      "Hányan laknak Önöknél? Megmondom, mekkora kazán kell.",
-      "Ingyenes, kötelezettség nélküli árajánlat, kezdjük el!",
-    ];
+    // A visitor who already started a quote gets ONE teaser: pick up where
+    // they left off. Everyone else gets the rotating ones.
+    const resuming = saved && !saved.quoteDone;
+    const TEASERS = resuming
+      ? ["Folytassa az árajánlatot ott, ahol abbahagyta."]
+      : [
+        "Üdv! Kérjen pár kattintással ingyenes árajánlatot kazáncserére.",
+        "Egynapos gázkészülék csere. Nézze meg, mennyibe kerül.",
+        "Régi kazánját cserélné? Számoljon árat egy perc alatt.",
+        "Melyik kondenzációs kazán illik a lakásához? Segítek.",
+        "Kondenzációs kazán ára beszereléssel, nézze meg most.",
+        "Kérdése van a fűtésről? Írjon, azonnal válaszolok.",
+        "Csere egyetlen nap alatt. Kérjen árajánlatot itt.",
+        "Hányan laknak Önöknél? Megmondom, mekkora kazán kell.",
+        "Ingyenes, kötelezettség nélküli árajánlat, kezdjük el!",
+      ];
     let teaserIdx = 0;
     let teaserTimer = null;
     let teaserDismissed = false;
@@ -224,9 +258,9 @@
 
     container.appendChild(tooltip);
     setTimeout(() => {
-      if (teaserDismissed) return;
+      if (teaserDismissed || chatOpen) return;
       tooltip.classList.add("show");
-      teaserTimer = setInterval(rotateTeaser, 9000); // swap the question every 9s
+      if (TEASERS.length > 1) teaserTimer = setInterval(rotateTeaser, 9000);
     }, 1600);
   }
 
@@ -235,7 +269,6 @@
     const launcher = document.querySelector(".faq-chat-launcher");
 
     if (chatOpen) {
-      // Close: animate, then HIDE (keep in DOM so the conversation persists).
       const w = chatWindow;
       w.classList.add("closing");
       setTimeout(() => {
@@ -250,12 +283,11 @@
         setTimeout(() => tooltip.classList.add("hidden"), 300);
       }
       if (!chatWindow) {
-        openChat(); // build once (also fires the greeting + first question)
+        openChat();
       } else {
-        // Re-show the existing window with its messages intact.
         chatWindow.style.display = "flex";
         chatWindow.style.animation = "none";
-        void chatWindow.offsetWidth; // force reflow so the open animation replays
+        void chatWindow.offsetWidth;
         chatWindow.style.animation = "";
         scrollToBottom();
         setTimeout(() => inputElement && inputElement.focus(), 120);
@@ -295,6 +327,7 @@
     phone.href = `tel:${PHONE.replace(/\s/g, "")}`;
     phone.setAttribute("aria-label", `Hívás: ${PHONE}`);
     phone.innerHTML = `${ICON.phone}<span>${PHONE}</span>`;
+    phone.onclick = () => track("phone_clicked", funnelSnapshot());
 
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
@@ -305,12 +338,11 @@
 
     actions.appendChild(phone);
     actions.appendChild(closeBtn);
-
     header.appendChild(logo);
     header.appendChild(textBlock);
     header.appendChild(actions);
 
-    // ---- Progress bar (how far through the questions) ----
+    // ---- Progress bar ----
     const progress = document.createElement("div");
     progress.className = "faq-progress";
     progress.innerHTML =
@@ -347,14 +379,10 @@
     inputBar.appendChild(inputElement);
     inputBar.appendChild(sendBtn);
 
-    // Hint shown ONLY when the customer has to type a free-text answer (the
-    // contact details at the end). It makes it obvious there are no buttons to
-    // click here — they must write something. Hidden while chips are offered.
     const inputHint = document.createElement("div");
     inputHint.className = "faq-input-hint";
     inputHint.innerHTML = `${ICON.write}<span>Most Önön a sor — kérjük, írja be a válaszát, majd nyomjon Entert.</span>`;
 
-    // Persistent hint below messages reminding visitors they can ask freely
     const questionHint = document.createElement("div");
     questionHint.className = "faq-question-hint";
     questionHint.textContent = "Kérdezzen bátran – pl. árakról, márkákról, garanciáról, határidőkről";
@@ -369,49 +397,66 @@
     chatWindow.appendChild(messagesContainer);
     chatWindow.appendChild(questionHint);
     chatWindow.appendChild(inputWrap);
-
     container.appendChild(chatWindow);
     setTimeout(() => inputElement && inputElement.focus(), 150);
 
-    if (!started) {
-      started = true;
-      track("quote_started");
-      addMessage("bot", `Üdvözlöm az **${BRAND}** árajánló asszisztensénél!\n\n• **8 rövid kérdés**, körülbelül egy perc\n• A végén **azonnal látja az előzetes árat**\n• Közben **bármit kérdezhet** – ár, márkák, garancia`);
-      // Clickable example questions so visitors see they can ask freely
-      const exWrap = document.createElement("div");
-      exWrap.className = "faq-chips faq-example-questions";
-      const examples = [
-        "Mennyibe kerül egy kazáncsere?",
-        "Tényleg egy nap alatt megvan a csere?",
-        "Milyen garanciát adtok?",
-      ];
-      examples.forEach((q) => {
-        const chip = makeChip(q);
-        chip.onclick = () => { exWrap.remove(); sendMessage(q); };
-        exWrap.appendChild(chip);
-      });
-      messagesContainer.appendChild(exWrap);
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-      sendMessage("Szeretnék árajánlatot kazán beépítésére / cseréjére.", true);
+    if (started) return;
+    started = true;
+
+    if (saved) {
+      restore(saved);
+      track("chat_restored", funnelSnapshot());
+      return;
     }
+
+    track("quote_started");
+    addMessage("bot", `Üdvözlöm az **${BRAND}** árajánló asszisztensénél!\n\n• **5 rövid kérdés**, körülbelül egy perc\n• A végén **azonnal látja az induló árat**\n• Közben **bármit kérdezhet** – ár, márkák, garancia`);
+    startQuote();
+  }
+
+  // The first question comes straight from the backend template — no model
+  // call and no hidden fake user message.
+  async function startQuote() {
+    sending = true;
+    addThinking();
+    try {
+      const data = await postApi({ action: "start" });
+      removeThinking();
+      handleReply(data, { hidden: true });
+    } catch (e) {
+      removeThinking();
+      addMessage("bot", `Elnézést, nem sikerült kapcsolódni. Kérem, próbálja újra később, vagy hívjon: **${PHONE}**`);
+    } finally {
+      sending = false;
+    }
+  }
+
+  function restore(d) {
+    convState = d.convState || {};
+    conversationHistory = d.conversationHistory || [];
+    lastLead = d.lastLead || null;
+    quoteDone = !!d.quoteDone;
+    filledFields = d.filledFields || [];
+    lastField = d.lastField || null;
+    turns = d.turns || 0;
+    try { photoData = JSON.parse(sessionStorage.getItem(PHOTO_KEY) || "[]") || []; } catch (e) { photoData = []; }
+    (d.transcript || []).forEach((m) => addMessage(m.s, m.t, m.k));
+    if (d.progressSnap) updateProgress(d.progressSnap[0], d.progressSnap[1]);
+    renderUi(d.ui);
   }
 
   function renderMarkdown(text) {
     const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
     const inline = (s) =>
       esc(s)
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+        .replace(/\[([^\]]+)\]\((https?:[^)\s]+|tel:[^)\s]+|mailto:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
         .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
-    // Build clean block elements (bullets, headers, paragraphs) for readability.
     let html = "";
     for (const raw of text.split("\n")) {
       const line = raw.trim();
       if (line === "") { html += '<div class="faq-sp"></div>'; continue; }
-      // "## Heading" -> a section label, so a long quote reads as grouped
-      // blocks instead of one undifferentiated list.
       if (line.startsWith("## ")) { html += '<div class="faq-sec">' + inline(line.slice(3)) + "</div>"; continue; }
-      // ">> ..." -> the grand total, rendered as a solid callout panel.
       if (line.startsWith(">> ")) { html += '<div class="faq-total">' + inline(line.slice(3)) + "</div>"; continue; }
       if (line.startsWith("•")) { html += '<div class="faq-li">' + inline(line) + "</div>"; continue; }
       if (/^\*\*.*\*\*:?$/.test(line)) { html += '<div class="faq-h">' + inline(line) + "</div>"; continue; }
@@ -424,17 +469,11 @@
     messagesContainer.querySelectorAll(".faq-chips").forEach((c) => c.remove());
   }
 
-  // Switch the composer between "pick a button" mode (chips shown) and
-  // "type your answer" mode (no buttons — the contact-detail questions). In
-  // type mode we surface a clear hint, highlight the field and auto-focus it so
-  // it's obvious the customer must write something.
   function setInputMode(typeMode) {
     if (!chatWindow) return;
     chatWindow.classList.toggle("type-mode", typeMode);
     if (inputElement) {
-      inputElement.placeholder = typeMode
-        ? "Írja ide a válaszát…"
-        : "Válasszon fent, vagy írjon ide…";
+      inputElement.placeholder = typeMode ? "Írja ide a válaszát…" : "Válasszon fent, vagy írjon ide…";
       if (typeMode) setTimeout(() => inputElement && inputElement.focus(), 80);
     }
   }
@@ -447,13 +486,22 @@
     return chip;
   }
 
-  function renderChips(chips) {
+  // Answer buttons. The one that fits the household (backend decides) gets a
+  // highlight and an "ajánlott" tag — the click still sends the plain label.
+  function renderChips(chips, recommended) {
     clearChips();
     if (!chips || !chips.length) return;
     const wrap = document.createElement("div");
     wrap.className = "faq-chips";
     chips.forEach((label) => {
       const chip = makeChip(label);
+      if (label === recommended) {
+        chip.classList.add("faq-chip-rec");
+        const tag = document.createElement("span");
+        tag.className = "faq-chip-tag";
+        tag.textContent = "ajánlott";
+        chip.appendChild(tag);
+      }
       chip.onclick = () => { clearChips(); sendMessage(label); };
       wrap.appendChild(chip);
     });
@@ -461,64 +509,183 @@
     scrollToBottom();
   }
 
-  // The four contact details, asked as ONE form instead of four separate
-  // questions. Each of those used to cost a full round-trip to the model, so
-  // this is the single biggest saving in how long the flow takes to complete —
-  // and the customer can see everything they're being asked for at once.
+  // Rebuild whichever controls belong under the last message.
+  function renderUi(u) {
+    ui = u || null;
+    if (!u) { setInputMode(false); return; }
+    if (u.type === "chips") { renderChips(u.chips, u.recommended); setInputMode(!u.chips.length); }
+    else if (u.type === "photo") { renderPhotoStep(); setInputMode(false); }
+    else if (u.type === "contact") { renderContactForm(); setInputMode(false); }
+    else if (u.type === "post") { renderPostQuote(u.post); setInputMode(false); }
+    else setInputMode(false);
+  }
+
+  // --- Photo step --------------------------------------------------------
+  // Optional. Photos are shrunk to <=1600px JPEG in the browser (a phone photo
+  // goes from ~4 MB to ~250 KB) and only sent with the contact form, where
+  // they ride along to the owner's e-mail as attachments.
+  const MAX_PHOTOS = 3;
+
+  function compressImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const max = 1600;
+          const scale = Math.min(1, max / Math.max(img.width, img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          resolve(canvas.toDataURL("image/jpeg", 0.72));
+        } catch (e) { URL.revokeObjectURL(url); reject(e); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("bad image")); };
+      img.src = url;
+    });
+  }
+
+  function renderPhotoStep() {
+    clearChips();
+    const box = document.createElement("div");
+    box.className = "faq-chips faq-form faq-photo";
+
+    const thumbs = document.createElement("div");
+    thumbs.className = "faq-photo-thumbs";
+
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.multiple = true;
+    fileInput.hidden = true;
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "faq-photo-add";
+    addBtn.innerHTML = `${ICON.camera}<span>Fotó hozzáadása</span>`;
+    addBtn.onclick = () => fileInput.click();
+
+    const status = document.createElement("div");
+    status.className = "faq-form-note";
+
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "faq-photo-actions";
+
+    const sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.className = "faq-form-submit";
+
+    const skip = makeChip("Kihagyom");
+    skip.onclick = () => {
+      photoData = []; savePhotos();
+      track("photo_skipped");
+      clearChips();
+      sendMessage("Kihagyom");
+    };
+
+    function refresh() {
+      thumbs.innerHTML = "";
+      photoData.forEach((src, i) => {
+        const t = document.createElement("div");
+        t.className = "faq-photo-thumb";
+        t.innerHTML = `<img src="${src}" alt="Fotó ${i + 1}">`;
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.setAttribute("aria-label", "Fotó törlése");
+        rm.innerHTML = "&times;";
+        rm.onclick = () => { photoData.splice(i, 1); savePhotos(); refresh(); };
+        t.appendChild(rm);
+        thumbs.appendChild(t);
+      });
+      addBtn.style.display = photoData.length >= MAX_PHOTOS ? "none" : "";
+      sendBtn.style.display = photoData.length ? "" : "none";
+      sendBtn.textContent = `Tovább ${photoData.length} fotóval`;
+      status.textContent = photoData.length ? "" : `Legfeljebb ${MAX_PHOTOS} fotó. Mobilon közvetlenül a kamerával is fotózhat.`;
+    }
+
+    fileInput.onchange = async () => {
+      const files = Array.from(fileInput.files || []).slice(0, MAX_PHOTOS - photoData.length);
+      fileInput.value = "";
+      if (!files.length) return;
+      status.textContent = "Fotók feldolgozása…";
+      for (const f of files) {
+        try { photoData.push(await compressImage(f)); }
+        catch (e) { track("photo_failed"); }
+      }
+      savePhotos();
+      refresh();
+      scrollToBottom();
+    };
+
+    sendBtn.onclick = () => {
+      if (!photoData.length) return;
+      track("photo_added", { count: photoData.length });
+      clearChips();
+      sendMessage(`${photoData.length} fotót csatoltam`);
+    };
+
+    actionsRow.appendChild(addBtn);
+    actionsRow.appendChild(skip);
+    box.appendChild(thumbs);
+    box.appendChild(actionsRow);
+    box.appendChild(sendBtn);
+    box.appendChild(status);
+    box.appendChild(fileInput);
+    messagesContainer.appendChild(box);
+    refresh();
+    scrollToBottom();
+  }
+
+  // --- Contact form --------------------------------------------------------
+  // E-mail is optional: the owner calls, so the phone number is what matters,
+  // and every extra required field loses people.
   const CONTACT_FIELDS = [
     { key: "name", label: "Név", type: "text", ph: "Kovács Anna", auto: "name",
       err: "Kérjük, adja meg a nevét.",
       ok: (v) => v.trim().length >= 2 },
-    { key: "email", label: "E-mail", type: "email", ph: "anna@example.hu", auto: "email",
-      err: "Ez az e-mail cím nem tűnik helyesnek.",
-      ok: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) },
     { key: "phone", label: "Telefonszám", type: "tel", ph: "+36 30 123 4567", auto: "tel",
       err: "Kérjük, adjon meg egy elérhető telefonszámot.",
       ok: (v) => (v.replace(/\D/g, "").length >= 7) },
     { key: "postal_code", label: "Irányítószám", type: "text", ph: "1117", auto: "postal-code",
       err: "Az irányítószám 4 számjegy.",
       ok: (v) => /^\d{4}$/.test(v.trim()) },
+    { key: "email", label: "E-mail (nem kötelező)", type: "email", ph: "anna@example.hu", auto: "email",
+      err: "Ez az e-mail cím nem tűnik helyesnek.",
+      ok: (v) => !v.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) },
   ];
 
   function renderContactForm() {
     clearChips();
     track("contact_form_shown", funnelSnapshot());
     const form = document.createElement("form");
-    form.className = "faq-chips faq-form"; // faq-chips so clearChips() removes it
+    form.className = "faq-chips faq-form";
     form.noValidate = true;
 
     const title = document.createElement("div");
     title.className = "faq-form-title";
-    title.textContent = "Hova küldjük az árajánlatot?";
+    title.textContent = "Hol érjük el?";
     form.appendChild(title);
 
     const inputs = {};
     CONTACT_FIELDS.forEach((f) => {
       const row = document.createElement("div");
       row.className = "faq-form-row";
-
       const id = "faq-f-" + f.key;
       const label = document.createElement("label");
       label.setAttribute("for", id);
       label.textContent = f.label;
-
       const input = document.createElement("input");
       input.id = id;
       input.type = f.type;
       input.placeholder = f.ph;
       input.autocomplete = f.auto;
       if (f.key === "postal_code") { input.inputMode = "numeric"; input.maxLength = 4; }
-
       const err = document.createElement("div");
       err.className = "faq-form-err";
       err.textContent = f.err;
-
-      // Clear the error as soon as they start fixing it.
-      input.addEventListener("input", () => {
-        row.classList.remove("showerr");
-        input.classList.remove("invalid");
-      });
-
+      input.addEventListener("input", () => { row.classList.remove("showerr"); input.classList.remove("invalid"); });
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(err);
@@ -529,19 +696,17 @@
     const submit = document.createElement("button");
     submit.type = "submit";
     submit.className = "faq-form-submit";
-    submit.textContent = "Árajánlat kérése";
+    submit.textContent = "Mutasd az árat";
     form.appendChild(submit);
 
     const note = document.createElement("div");
     note.className = "faq-form-note";
-    note.textContent =
-      "Az adatait csak az árajánlat elküldéséhez és a felmérés egyeztetéséhez használjuk.";
+    note.textContent = "Az adatait csak az ajánlathoz és a felmérés egyeztetéséhez használjuk.";
     form.appendChild(note);
 
     form.onsubmit = (e) => {
       e.preventDefault();
       if (sending) return;
-
       let firstBad = null;
       const values = {};
       CONTACT_FIELDS.forEach((f) => {
@@ -551,21 +716,17 @@
           row.classList.add("showerr");
           input.classList.add("invalid");
           if (!firstBad) firstBad = input;
-        } else {
+        } else if (v.trim()) {
           values[f.key] = v.trim();
         }
       });
       if (firstBad) { track("contact_form_invalid", { field: firstBad.id.replace("faq-f-", "") }); firstBad.focus(); return; }
-      track("contact_form_submitted");
+      track("contact_form_submitted", { with_email: !!values.email });
 
-      // Write the answers straight into the carried state. The backend merges
-      // this, sees the quote is complete, and returns it without another model
-      // call — so submitting the form goes straight to the price.
+      // The backend sees the state is complete and prices it without a model call.
       convState = Object.assign({}, convState, values);
       submit.disabled = true;
-      sendMessage(
-        `${values.name} · ${values.email} · ${values.phone} · ${values.postal_code}`
-      );
+      sendMessage([values.name, values.phone, values.postal_code, values.email].filter(Boolean).join(" · "));
     };
 
     messagesContainer.appendChild(form);
@@ -574,44 +735,188 @@
     if (first) setTimeout(() => first.focus(), 120);
   }
 
-  // After the quote is shown, offer to e-mail it to the customer.
-  function renderEmailOffer() {
+  // --- After the quote: warranty, survey booking, e-mail copy ----------------
+  const HU_DAYS = ["vasárnap", "hétfő", "kedd", "szerda", "csütörtök", "péntek", "szombat"];
+  const HU_DAY_ABBR = ["V", "H", "K", "Sze", "Cs", "P", "Szo"];
+  const HU_MONTHS = ["jan.", "febr.", "márc.", "ápr.", "máj.", "jún.", "júl.", "aug.", "szept.", "okt.", "nov.", "dec."];
+
+  // The next 8 working days, starting tomorrow.
+  function nextWorkingDays(n) {
+    const out = [];
+    const d = new Date();
+    while (out.length < n) {
+      d.setDate(d.getDate() + 1);
+      const wd = d.getDay();
+      if (wd === 0 || wd === 6) continue;
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      out.push({ iso, label: `${HU_MONTHS[d.getMonth()]} ${d.getDate()}. (${HU_DAYS[wd]})`, abbr: HU_DAY_ABBR[wd], date: `${HU_MONTHS[d.getMonth()]} ${d.getDate()}.` });
+    }
+    return out;
+  }
+
+  function renderPostQuote(post) {
     clearChips();
-    const wrap = document.createElement("div");
-    wrap.className = "faq-chips";
+    if (!post) return;
+    const card = document.createElement("div");
+    card.className = "faq-chips faq-form faq-post";
 
-    const yes = document.createElement("button");
-    yes.type = "button";
-    yes.className = "faq-chip faq-chip-primary";
-    yes.innerHTML = `${ICON.mail}<span>Kérem e-mailben is</span>`;
-    yes.onclick = () => { clearChips(); track("email_requested"); requestEmail(); };
+    // Warranty: chosen here, on the finished quote, where the price is visible.
+    if (!post.booked) {
+      const wTitle = document.createElement("div");
+      wTitle.className = "faq-form-title faq-post-title";
+      wTitle.innerHTML = `${ICON.shield}<span>Garancia a készülékre</span>`;
+      card.appendChild(wTitle);
+      const seg = document.createElement("div");
+      seg.className = "faq-seg";
+      (post.warrantyOptions || []).forEach((o) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "faq-seg-btn" + (o.value === post.warranty ? " active" : "");
+        b.innerHTML = `<span>${o.label}</span><small>${o.extra}</small>`;
+        b.onclick = () => changeWarranty(o.value, post);
+        seg.appendChild(b);
+      });
+      card.appendChild(seg);
+    }
 
-    const no = makeChip("Köszönöm, nem");
-    no.onclick = () => {
-      clearChips();
-      track("email_declined");
-      addMessage("bot", "Rendben, köszönjük a megkeresést! Hamarosan keressük. Ha sürgős, hívjon: " + PHONE);
-    };
+    // Survey booking: a requested slot, confirmed by phone (no live calendar).
+    const bTitle = document.createElement("div");
+    bTitle.className = "faq-form-title faq-post-title";
+    bTitle.innerHTML = `${ICON.calendar}<span>Ingyenes felmérés — mikor jöhetünk?</span>`;
+    card.appendChild(bTitle);
 
-    wrap.appendChild(yes);
-    wrap.appendChild(no);
-    messagesContainer.appendChild(wrap);
+    if (post.booked) {
+      const done = document.createElement("div");
+      done.className = "faq-post-done";
+      done.innerHTML = `${ICON.check}<span>Időpont kérve: ${post.booked}</span>`;
+      card.appendChild(done);
+    } else {
+      const days = nextWorkingDays(8);
+      let pickedDay = null, pickedWindow = null;
+      const dayGrid = document.createElement("div");
+      dayGrid.className = "faq-day-grid";
+      days.forEach((d) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "faq-day";
+        b.innerHTML = `<span>${d.abbr}</span><small>${d.date}</small>`;
+        b.title = d.label;
+        b.setAttribute("aria-label", d.label);
+        b.onclick = () => {
+          pickedDay = d;
+          dayGrid.querySelectorAll(".faq-day").forEach((x) => x.classList.toggle("active", x === b));
+          check();
+        };
+        dayGrid.appendChild(b);
+      });
+      card.appendChild(dayGrid);
+
+      const winRow = document.createElement("div");
+      winRow.className = "faq-seg faq-seg-sm";
+      [["delelott", "Délelőtt"], ["delutan", "Délután"], ["barmikor", "Bármikor"]].forEach(([v, l]) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "faq-seg-btn";
+        b.textContent = l;
+        b.onclick = () => {
+          pickedWindow = v;
+          winRow.querySelectorAll(".faq-seg-btn").forEach((x) => x.classList.toggle("active", x === b));
+          check();
+        };
+        winRow.appendChild(b);
+      });
+      card.appendChild(winRow);
+
+      const book = document.createElement("button");
+      book.type = "button";
+      book.className = "faq-form-submit";
+      book.textContent = "Felmérés kérése";
+      book.disabled = true;
+      function check() { book.disabled = !(pickedDay && pickedWindow); }
+      book.onclick = () => bookSurvey(pickedDay, pickedWindow, post, book);
+      card.appendChild(book);
+
+      const note = document.createElement("div");
+      note.className = "faq-form-note";
+      note.textContent = "Kollégánk telefonon visszaigazolja az időpontot. Ha nem jó, egyeztet egy másikat.";
+      card.appendChild(note);
+    }
+
+    if (post.emailOffer && !post.emailed) {
+      const mailBtn = document.createElement("button");
+      mailBtn.type = "button";
+      mailBtn.className = "faq-chip faq-post-mail";
+      mailBtn.innerHTML = `${ICON.mail}<span>Elküldjük e-mailben is</span>`;
+      mailBtn.onclick = () => { track("email_requested"); requestEmail(post); };
+      card.appendChild(mailBtn);
+    }
+
+    messagesContainer.appendChild(card);
     scrollToBottom();
   }
 
-  async function requestEmail() {
+  async function changeWarranty(value, post) {
+    if (sending || !lastLead || value === post.warranty) return;
+    sending = true;
+    try {
+      const data = await postApi({ action: "set_warranty", warranty: value, lead: lastLead });
+      if (!data || !data.lead) throw new Error("bad reply");
+      lastLead = data.lead;
+      post.warranty = value;
+      track("warranty_changed", { warranty: value });
+      // Rewrite the price bubble in place, so there is only ever one total.
+      const idx = transcript.findIndex((m) => m.k === "quote-price");
+      const el = messagesContainer.querySelector('[data-kind="quote-price"] .faq-bubble');
+      if (idx >= 0) transcript[idx].t = data.answer;
+      if (el) {
+        el.innerHTML = renderMarkdown(data.answer);
+        el.classList.remove("faq-flash"); void el.offsetWidth; el.classList.add("faq-flash");
+      }
+      renderUi({ type: "post", post });
+      save();
+    } catch (e) {
+      addMessage("bot", `Elnézést, ezt most nem sikerült módosítani. A garanciát a felmérésen is kiválaszthatja.`);
+    } finally {
+      sending = false;
+    }
+  }
+
+  async function bookSurvey(day, windowKey, post, btn) {
+    if (sending || !lastLead || !day || !windowKey) return;
+    sending = true;
+    btn.disabled = true;
+    addThinking();
+    try {
+      const data = await postApi({ action: "book_survey", lead: lastLead, booking: { date: day.iso, dayLabel: day.label, window: windowKey } });
+      removeThinking();
+      if (!data || !data.answer) throw new Error("bad reply");
+      track("booking_requested", { window: windowKey, days_ahead: nextWorkingDays(8).findIndex((d) => d.iso === day.iso) + 1 });
+      post.booked = `${day.label}, ${windowKey === "delelott" ? "délelőtt" : windowKey === "delutan" ? "délután" : "bármikor"}`;
+      clearChips();
+      addMessage("bot", data.answer);
+      renderUi({ type: "post", post });
+      save();
+    } catch (e) {
+      removeThinking();
+      btn.disabled = false;
+      addMessage("bot", `Elnézést, most nem sikerült elküldeni. Kérem, próbálja újra, vagy hívjon: **${PHONE}**`);
+    } finally {
+      sending = false;
+    }
+  }
+
+  async function requestEmail(post) {
     if (sending || !lastLead) return;
     sending = true;
     addThinking();
     try {
-      const res = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "email_customer", lead: lastLead }),
-      });
+      const data = await postApi({ action: "email_customer", lead: lastLead });
       removeThinking();
-      const data = await res.json();
-      addMessage("bot", data.answer || "Elküldtük az árajánlatot a megadott e-mail címre.");
+      post.emailed = true;
+      clearChips();
+      addMessage("bot", (data && data.answer) || "Elküldtük az ajánlatot a megadott e-mail címre.");
+      renderUi({ type: "post", post });
+      save();
     } catch (e) {
       removeThinking();
       addMessage("bot", "Sajnos most nem sikerült e-mailt küldeni. Kérjük, próbálja később.");
@@ -624,9 +929,11 @@
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
 
-  function addMessage(sender, text) {
+  // kind: optional tag ("quote-price") so a message can be found and rewritten.
+  function addMessage(sender, text, kind) {
     const msg = document.createElement("div");
     msg.className = "faq-msg " + sender;
+    if (kind) msg.dataset.kind = kind;
 
     if (sender === "bot") {
       const avatar = document.createElement("img");
@@ -644,6 +951,7 @@
 
     msg.appendChild(bubble);
     messagesContainer.appendChild(msg);
+    transcript.push(kind ? { s: sender, t: text, k: kind } : { s: sender, t: text });
     scrollToBottom();
     return msg;
   }
@@ -663,9 +971,9 @@
     if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
   }
 
-  // Update the progress bar from the backend's answered/total counts.
   function updateProgress(done, total) {
     if (!progressFillEl || !total) return;
+    progressSnap = [done, total];
     const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
     progressFillEl.style.width = pct + "%";
     if (progressLabelEl) progressLabelEl.textContent = pct + "%";
@@ -675,92 +983,131 @@
     }
   }
 
-  // text: message to send. hidden: don't show as a user bubble (the kickoff).
-  async function sendMessage(presetText, hidden) {
+  async function postApi(body) {
+    const res = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = new Error("http " + res.status);
+      err.status = res.status;
+      throw err;
+    }
+    return res.json();
+  }
+
+  // Render one backend reply: the bubbles, then the right controls.
+  function handleReply(data, opts) {
+    const prevState = (opts && opts.prevState) || {};
+    if (data.state && typeof data.state === "object") convState = data.state;
+    try {
+      if (!(opts && opts.hidden)) noteStateChange(prevState, data);
+      if (data.lead && !quoteDone) {
+        quoteDone = true;
+        const qs = data.lead.quote || {};
+        track("quote_completed", { fields_answered: filledFields.length, turns, quote_total: qs.total, photos: photoData.length });
+      }
+    } catch (e) {}
+    if (typeof data.progress === "number" && typeof data.progressTotal === "number") {
+      updateProgress(data.progress, data.progressTotal);
+    }
+
+    const parts = String(data.answer || "Elnézést, nem találtam választ.").split("[[SPLIT]]").map(s => s.trim()).filter(Boolean);
+    parts.forEach((p, i) => addMessage("bot", p, data.lead && i === 0 ? "quote-price" : undefined));
+    conversationHistory.push({ role: "assistant", content: parts.join("\n\n") });
+
+    if (data.lead) {
+      lastLead = data.lead;
+      photoData = []; savePhotos(); // they went out with the owner e-mail
+      renderUi({ type: "post", post: data.postQuote || {} });
+    } else if (data.contactForm) {
+      renderUi({ type: "contact" });
+    } else if (data.photoStep) {
+      renderUi({ type: "photo" });
+    } else {
+      renderUi({ type: "chips", chips: data.chips || [], recommended: data.recommendedChip || null });
+    }
+    save();
+  }
+
+  // text: message to send (typed, or a clicked chip label).
+  async function sendMessage(presetText) {
     if (sending) return;
     const text = (presetText !== undefined ? presetText : (inputElement.value || "")).trim();
     if (!text) return;
 
     clearChips();
-    if (!hidden) addMessage("user", text);
+    addMessage("user", text);
     if (presetText === undefined) inputElement.value = "";
     sending = true;
 
     conversationHistory.push({ role: "user", content: text });
-    if (!hidden) { turns++; track("message_sent", { via: presetText !== undefined ? "chip" : "typed", after_field: lastField }); }
+    turns++;
+    track("message_sent", { via: presetText !== undefined ? "chip" : "typed", after_field: lastField });
     let prevState = {};
     try { prevState = Object.assign({}, convState); } catch (e) {}
     addThinking();
 
     try {
-      const res = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: text, history: conversationHistory, state: convState }),
-      });
-
+      const body = { question: text, history: conversationHistory, state: convState };
+      // Photos only travel with the request that completes the quote.
+      if (photoData.length && convState.name && convState.phone) body.photos = photoData;
+      const data = await postApi(body);
       removeThinking();
-
-      if (!res.ok) {
-        track("widget_error", { kind: "http", status: res.status, after_field: lastField });
-        addMessage("bot", "Elnézést, hiba történt. Kérjük, próbálja újra később.");
-        sending = false;
-        return;
-      }
-
-      const data = await res.json();
-      if (data.state && typeof data.state === "object") convState = data.state;
-      // Analytics only - wrapped so it can never interrupt the quote itself.
-      try {
-        if (!hidden) noteStateChange(prevState, data);
-        if (data.lead && !quoteDone) {
-          quoteDone = true;
-          const qs = data.lead.quote || {};
-          track("quote_completed", { fields_answered: filledFields.length, turns, quote_low: qs.low, quote_high: qs.high, quote_total: qs.total });
-        }
-      } catch (e) {}
-      if (typeof data.progress === "number" && typeof data.progressTotal === "number") {
-        updateProgress(data.progress, data.progressTotal);
-      }
-      const botResponse = data.answer || "Elnézést, nem találtam választ.";
-      // A response may contain [[SPLIT]] markers → render as separate bubbles
-      // for readability (e.g. the final quote: price / note / recap).
-      const parts = botResponse.split("[[SPLIT]]").map(s => s.trim()).filter(Boolean);
-      parts.forEach(p => addMessage("bot", p));
-      conversationHistory.push({ role: "assistant", content: parts.join("\n\n") });
-
-      const hasChips = Array.isArray(data.chips) && data.chips.length > 0;
-      const isComplete = !!data.lead; // final quote turn carries the lead object
-
-      if (data.emailOffer && data.lead) {
-        lastLead = data.lead;
-        renderEmailOffer();
-        setInputMode(false);
-      } else if (data.contactForm) {
-        // Project questions done — collect all four contact details at once.
-        renderContactForm();
-        setInputMode(false);
-      } else {
-        renderChips(data.chips);
-        // No buttons and the quote isn't finished yet => a free-text question
-        // (name / e-mail / phone / postal code). Make that visually obvious.
-        setInputMode(!hasChips && !isComplete);
-      }
+      handleReply(data, { prevState });
     } catch (err) {
-      console.error(err);
-      track("widget_error", { kind: "network", after_field: lastField });
       removeThinking();
-      addMessage("bot", "Elnézést, nem sikerült kapcsolódni a szerverhez.");
+      track("widget_error", { kind: err && err.status ? "http" : "network", status: err && err.status, after_field: lastField });
+      addMessage("bot", `Elnézést, hiba történt. Kérjük, próbálja újra, vagy hívjon: **${PHONE}**`);
+      // Put the controls back so the customer is not stuck.
+      renderUi(ui);
     } finally {
       sending = false;
     }
+  }
+
+  // --- Opening from outside ----------------------------------------------------
+  //   window.AquaWidget.open()      any button on the host site
+  //   ?ajanlat or #ajanlat in URL   direct link for Google profile, ads, QR codes
+  //   AQUA_CONFIG.autoOpenDelay     opens once per visit, desktop only
+  function open() { if (!chatOpen) toggleChat(); }
+  function close() { if (chatOpen) toggleChat(); }
+  window.AquaWidget = { open, close };
+
+  function wantsDeepLink() {
+    try {
+      return new URLSearchParams(location.search).has("ajanlat") || /^#ajanlat\b/.test(location.hash);
+    } catch (e) { return false; }
+  }
+
+  function scheduleAutoOpen() {
+    const delay = Number(config.autoOpenDelay);
+    if (!delay || saved) return;
+    const desktop = window.matchMedia && window.matchMedia("(min-width: 768px)").matches;
+    if (!desktop) return;
+    let done = false;
+    try { done = sessionStorage.getItem("aqua-auto-opened") === "1"; } catch (e) {}
+    if (done) return;
+    setTimeout(() => {
+      if (chatOpen || started) return;
+      try { sessionStorage.setItem("aqua-auto-opened", "1"); } catch (e) {}
+      track("auto_opened");
+      open();
+    }, delay);
   }
 
   function init() {
     injectStyles();
     createLauncher();
     initAnalytics();
-    track("widget_loaded");
+    track("widget_loaded", { resumed: !!saved });
+    if (wantsDeepLink()) {
+      track("deep_link_opened");
+      open();
+    } else {
+      scheduleAutoOpen();
+    }
   }
 
   if (document.readyState === "loading") {

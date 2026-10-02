@@ -429,9 +429,10 @@
    The four contact questions used to be four separate round-trips to the model.
    They are one form now, so the customer fills them in at their own speed and
    the quote comes back in a single request. */
-.faq-form {
+.faq-chips.faq-form {
   /* .faq-chips is a flex row (so clearChips() finds this form); the form itself
-     must stack, or the fields shrink to their content width instead of filling. */
+     must stack, or the fields shrink to their content width instead of filling.
+     Two classes, so this wins over .faq-chips declared further down. */
   display: block;
   margin: 0 0 16px 0;
   padding: 14px;
@@ -557,6 +558,163 @@
 }
 .faq-chip-primary:hover { background: #0f2a5e; border-color: #0f2a5e; color: #ffffff; }
 .faq-chip svg { flex-shrink: 0; }
+
+/* The answer that fits the household (e.g. tárolós for 3–4 people). */
+.faq-chip-rec {
+  background: #eaf3ff;
+  box-shadow: 0 0 0 3px rgba(43, 95, 208, 0.14);
+}
+.faq-chip-tag {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #2b5fd0;
+  color: #ffffff;
+}
+.faq-chip-rec:hover .faq-chip-tag { background: #ffffff; color: #2b5fd0; }
+
+/* ---------- Photo step ---------- */
+.faq-photo-thumbs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.faq-photo-thumbs:not(:empty) { margin-bottom: 10px; }
+.faq-photo-thumb {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1.5px solid #d6e6ff;
+  background: #ffffff;
+}
+.faq-photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.faq-photo-thumb button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(15, 42, 94, 0.85);
+  color: #ffffff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.faq-photo-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.faq-photo-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 9px 16px;
+  border: 1.5px dashed #2b5fd0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #2b5fd0;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.faq-photo-add:hover { background: #eaf3ff; }
+.faq-photo .faq-form-submit { margin-top: 10px; }
+
+/* ---------- After the quote: warranty, booking ---------- */
+.faq-post-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.faq-post-title svg { color: #2b5fd0; flex-shrink: 0; }
+.faq-post-title:not(:first-child) {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e6eefb;
+}
+
+.faq-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.faq-seg-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 6px;
+  border: 1.5px solid #d6e6ff;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f2a5e;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.faq-seg-btn small { font-size: 11px; font-weight: 600; color: #566175; }
+.faq-seg-btn:hover { border-color: #2b5fd0; }
+.faq-seg-btn.active { border-color: #2b5fd0; background: #2b5fd0; color: #ffffff; }
+.faq-seg-btn.active small { color: #eaf3ff; }
+.faq-seg-sm { margin-top: 8px; }
+
+.faq-day-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.faq-day {
+  padding: 8px 4px;
+  border: 1.5px solid #d6e6ff;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f2a5e;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.faq-day small { font-size: 11px; font-weight: 600; color: #566175; }
+.faq-day:hover { border-color: #2b5fd0; }
+.faq-day.active { border-color: #2b5fd0; background: #2b5fd0; color: #ffffff; }
+.faq-day.active small { color: #eaf3ff; }
+
+.faq-post .faq-form-submit { margin-top: 10px; }
+.faq-post-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #ecfdf5;
+  color: #166534;
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.faq-post-mail { margin-top: 12px; }
+
+/* The price bubble briefly lights up when the warranty changes the total. */
+.faq-flash { animation: faqFlash 0.9s ease; }
+@keyframes faqFlash {
+  0% { box-shadow: 0 0 0 0 rgba(43, 95, 208, 0.45); }
+  100% { box-shadow: 0 0 0 10px rgba(43, 95, 208, 0); }
+}
 
 /* ---------- Input ---------- */
 .faq-chat-input {
@@ -730,6 +888,7 @@
   .faq-msg,
   .faq-chips,
   .faq-input-hint,
+  .faq-flash,
   .faq-chat-tooltip { animation: none; transition: none; }
   .faq-chat-launcher:hover,
   .faq-chip:hover,

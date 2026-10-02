@@ -1,22 +1,24 @@
 // ============================================================================
 //  AQUA SYSTEM SERVICE KFT. — Árajánló asszisztens (gas boiler quoting agent)
-//  - AI provider: OpenAI (gpt-4o-mini) — drives the Hungarian conversation only.
-//  - Pricing is computed DETERMINISTICALLY in this backend from the PRICES table
-//    below. The AI never does arithmetic, so the total can never be miscalculated.
-//  - When all answers are collected the AI emits a hidden JSON block
-//    (<!--QUOTE_JSON:{...}-->). We parse it, price it, e-mail the owner, and
-//    return the itemised estimate to show the customer.
+//  - The conversation is TEMPLATE-DRIVEN: when the customer clicks an answer
+//    button (or types something we can map), the backend records it and writes
+//    the next question itself — no model call, so every click is instant.
+//  - The AI model (OpenAI / Gemini) is only called when the customer types
+//    something free-form: a side question, or an answer we can't map.
+//  - Pricing is computed DETERMINISTICALLY from the PRICES table below. The AI
+//    never does arithmetic, so the total can never be miscalculated.
+//  - The price is shown as a FLOOR ("induló ár ... Ft-tól") with every
+//    unknown spelled out as a named surcharge, never as a range.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
 //  PRICE TABLE (HUF) — single source of truth. Edit numbers here only.
-//  Source: the company's price sheet (milan.xlsx). Prices shown "as-is".
+//  Source: the company's price sheet (milan.xlsx).
 // ---------------------------------------------------------------------------
 const PRICES = {
-    // Mit kell LESZERELNI? Ez dönti el, hogy a meglévő égéstermék-elvezetés
-    // használható-e: egy hagyományos (nyílt égésterű / turbós) készülék kéménye
-    // NEM alkalmas kondenzációs kazánhoz, ott saválló bélelés / átalakítás kell
-    // (lásd `chimney_conversion` lentebb). "nem_tudom" => legolcsóbb feltételezés.
+    // Mit kell LESZERELNI? Egy hagyományos (nyílt égésterű / turbós) készülék
+    // kéménye NEM alkalmas kondenzációs kazánhoz, ott saválló bélelés kell
+    // (lásd `chimney_conversion`). "nem_tudom" => legolcsóbb feltételezés.
     old_boiler: {
         kondenzacios: { huf: 0,     label: "Leszerelendő készülék: kondenzációs" },
         hagyomanyos:  { huf: 60000, label: "Leszerelendő készülék: hagyományos (nyílt égésterű vagy turbós)" },
@@ -26,8 +28,7 @@ const PRICES = {
     // ÁRAT ELLENŐRIZNI: irányár, írd át az Aqua System saját árára.
     chimney_conversion: { huf: 260000, label: "Kéményátalakítás kondenzációs kazánhoz (saválló béléscső)" },
 
-    // Új kazán. Az Aqua System KIZÁRÓLAG kondenzációs készüléket épít be, ezért
-    // itt minden opció kondenzációs. "nem_tudom" => a legolcsóbb (kombi).
+    // Új kazán — KIZÁRÓLAG kondenzációs. "nem_tudom" => a legolcsóbb (kombi).
     new_boiler: {
         kombi_24:   { huf: 450000, label: "Kondenzációs kombi gázkészülék, 24 kW" },
         tarolos_46: { huf: 900000, label: "Kondenzációs tárolós gázkészülék, beépített 46 literes tárolóval, 24 kW" },
@@ -41,54 +42,77 @@ const PRICES = {
         gyujtokemeny: { huf: 600000, label: "Társasházi gyűjtőkémény bekötés" },
         nem_tudom:    { huf: 380000, label: "Kéménykivezetés a tetőn keresztül (alap — a felmérésnél pontosítjuk)" },
     },
-    // Életvédelmi (Fi) relé. "nem_tudom" => a legolcsóbb (van, 50 000).
+    // Életvédelmi (Fi) relé. A laikus ügyfél ezt nem tudja megválaszolni, ezért
+    // NEM kérdezzük: az induló ár a "van" esettel számol, a különbözet a
+    // "nincs benne" listán szerepel.
     rcd: {
-        van:       { huf: 50000,  label: "Életvédelmi (Fi) relé: van" },
-        nincs:     { huf: 100000, label: "Életvédelmi (Fi) relé: nincs — kiépítés szükséges" },
-        nem_tudom: { huf: 50000,  label: "Életvédelmi (Fi) relé (alap — a felmérésnél pontosítjuk)" },
+        van:   { huf: 50000,  label: "Életvédelmi (Fi) relé ellenőrzése és bekötése" },
+        nincs: { huf: 100000, label: "Életvédelmi (Fi) relé kiépítése" },
     },
-    // Hány év garanciát kér az ügyfél. A 2 év a gyári alap (ingyenes), a hosszabb
-    // garancia felára itt állítható.
+    // Garancia — nem kérdés, hanem választható a kész ajánlaton.
     // ÁRAT ELLENŐRIZNI: irányárak, írd át az Aqua System saját áraira.
     warranty: {
-        w_2:       { huf: 0,      label: "Garancia: 2 év (gyári alapgarancia)" },
-        w_5:       { huf: 60000,  label: "Kiterjesztett garancia: 5 év" },
-        w_10:      { huf: 150000, label: "Kiterjesztett garancia: 10 év" },
-        nem_tudom: { huf: 0,      label: "Garancia: 2 év (alap — a felmérésnél pontosítjuk)" },
+        w_2:  { huf: 0,      label: "Garancia: 2 év (gyári alapgarancia)" },
+        w_5:  { huf: 60000,  label: "Kiterjesztett garancia: 5 év" },
+        w_10: { huf: 150000, label: "Kiterjesztett garancia: 10 év" },
     },
     // Mindig felszámolt standard tételek
     standard: {
         wet_system:    { huf: 300000, label: "Vizes rendszerre kötés mágneses iszapleválasztóval (anyag + munkadíj)" },
         commissioning: { huf: 50000,  label: "Gázkazán gyári üzembe helyezése" },
     },
-    // Csak csere esetén
     demolition: { huf: 90000, label: "Régi kazán és kémény bontása" },
 };
 
-// Company confirmed: the boiler-type prices include the appliance, and all
-// prices are GROSS (ÁFA included) — what the customer actually pays.
-const APPLIANCE_INCLUDED = true;
-
-// Offer to e-mail the quote to the CUSTOMER. Requires a real Resend key + a
-// VERIFIED sending domain — until that exists, sending fails and the customer
-// would see an error, so keep this OFF. The owner still gets notified
-// internally. Flip to true (or set EMAIL_OFFER=on in .env) once the domain is
-// live. The owner-quote recap closes cleanly without this offer.
+// Offer to e-mail the quote to the CUSTOMER. Requires a VERIFIED sending domain
+// in Resend — until that exists, keep this OFF (EMAIL_OFFER=on in .env).
 const EMAIL_OFFER_ENABLED =
     (process.env.EMAIL_OFFER || "").toLowerCase() === "on";
+
+const PHONE = "+36 20 399 0093";
+const COMPANY_EMAIL = "keszulekcsere@aqua-system.hu";
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ---------------------------------------------------------------------------
+//  Service area. Budapest (1xxx) plus the agglomeration towns below. This is a
+//  SOFT check: a postal code outside the list never blocks the quote, it only
+//  adds a note for the customer and a flag on the owner's e-mail. Add codes
+//  here if Aqua System covers more towns.
+// ---------------------------------------------------------------------------
+const AGGLO_POSTAL_CODES = new Set([
+    "2000", "2011", "2013", "2021", "2030", "2038", "2040", "2045", "2049",
+    "2051", "2053", "2071", "2072", "2083", "2084", "2085", "2089", "2090",
+    "2092", "2093", "2094", "2096", "2097", "2100", "2111", "2112", "2119",
+    "2120", "2131", "2132", "2141", "2142", "2143", "2144", "2146", "2151",
+    "2162", "2220", "2225", "2230", "2233", "2234", "2310", "2314", "2315",
+    "2316", "2330", "2335", "2336", "2351", "2360", "2364", "2440", "2461",
+]);
+
+function classifyArea(postal) {
+    const p = String(postal || "").trim();
+    if (!/^\d{4}$/.test(p)) return "unknown";
+    if (p[0] === "1") return "budapest";
+    if (AGGLO_POSTAL_CODES.has(p)) return "agglo";
+    return "outside";
+}
 
 // ---------------------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------------------
 function formatHuf(n) {
     // 450000 -> "450 000 Ft"
-    return n.toLocaleString("hu-HU").replace(/ /g, " ") + " Ft";
+    return n.toLocaleString("hu-HU").replace(/\s/g, " ") + " Ft";
 }
 
-// Build the itemised quote deterministically from the AI's structured answers.
+function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+}
+
+const filled = (s, k) => s && s[k] != null && String(s[k]).trim() !== "";
+
 // Which block of the breakdown a line belongs to, in the order they are shown.
-// Grouping the items turns a flat wall of nine bullets into something the
-// customer can actually scan.
 const SECTIONS = [
     ["keszulek", "A készülék"],
     ["kemeny", "Kémény és égéstermék-elvezetés"],
@@ -101,81 +125,75 @@ function buildQuote(sel) {
     const items = [];
     const add = (entry, sec) => { if (entry) items.push({ label: entry.label, huf: entry.huf, sec }); };
 
-    // The new-vs-replacement question was removed; we always quote the full
-    // job (current boiler handling + demolition included). "nem_tudom" answers
-    // fall back to the cheapest variant of each field.
-    const isReplacement = true;
-
     add(PRICES.old_boiler[sel.old_boiler] || PRICES.old_boiler.nem_tudom, "bontas");
     add(PRICES.new_boiler[sel.new_boiler] || PRICES.new_boiler.nem_tudom, "keszulek");
     add(PRICES.flue[sel.flue] || PRICES.flue.nem_tudom, "kemeny");
-    // A hagyományos készülék kéménye nem alkalmas kondenzációs kazánhoz — ilyenkor
-    // saválló bélelés / kéményátalakítás is kell. Kondenzációs cserénél nem.
     if (sel.old_boiler === "hagyomanyos") add(PRICES.chimney_conversion, "kemeny");
-    add(PRICES.rcd[sel.rcd] || PRICES.rcd.nem_tudom, "szereles");
-    add(PRICES.warranty[sel.warranty] || PRICES.warranty.nem_tudom, "garancia");
+    add(PRICES.rcd.van, "szereles");
+    add(PRICES.warranty[sel.warranty] || PRICES.warranty.w_2, "garancia");
 
-    // Standard costs — always included (not asked).
     add(PRICES.standard.wet_system, "szereles");
     add(PRICES.standard.commissioning, "szereles");
     add(PRICES.demolition, "bontas");
 
     const total = items.reduce((s, i) => s + i.huf, 0);
-    return { items, total, isReplacement };
+    return { items, total };
+}
+
+// Everything the floor price does NOT include, with the exact surcharge where
+// we know it. "Nem tudom" answers add the difference to the dearer variant, so
+// the customer sees up front what the survey could add — and never hears
+// "de a kalkulátor mást mondott".
+function surchargeLines(sel) {
+    const out = [];
+    if (sel.old_boiler === "nem_tudom") {
+        const d = PRICES.old_boiler.hagyomanyos.huf + PRICES.chimney_conversion.huf;
+        out.push(`Ha a régi készülék hagyományos: kéményátalakítással együtt **+${formatHuf(d)}**`);
+    }
+    if (sel.new_boiler === "nem_tudom") {
+        const d = PRICES.new_boiler.tarolos_46.huf - PRICES.new_boiler.kombi_24.huf;
+        out.push(`Ha tárolós készülék kell a kombi helyett: **+${formatHuf(d)}**`);
+    }
+    if (sel.flue === "nem_tudom") {
+        const d = PRICES.flue.tegla_kemeny.huf - PRICES.flue.teto.huf;
+        out.push(`Ha kéménybe kell kötni a tetőn át helyett: **+${formatHuf(d)}**`);
+    }
+    out.push(`Ha nincs életvédelmi (Fi) relé, a kiépítése: **+${formatHuf(PRICES.rcd.nincs.huf - PRICES.rcd.van.huf)}**`);
+    return out;
 }
 
 // Backend decides when the quote is complete — independent of the AI model.
+// E-mail is optional: the owner calls, so the phone number is what matters.
+const REQUIRED = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline",
+    "name", "phone", "postal_code"];
 function isQuoteReady(s) {
     if (!s || typeof s !== "object") return false;
-    const filled = (k) => s[k] != null && String(s[k]).trim() !== "";
-    const required = [
-        "old_boiler", "occupants", "new_boiler", "flue", "rcd", "warranty",
-        "name", "email", "phone", "postal_code", "budget", "timeline",
-    ];
-    return required.every(filled);
+    return REQUIRED.every((k) => filled(s, k));
 }
 
-// Quick-reply buttons for each choice question — decided by the BACKEND from the
-// current state, so the right buttons always appear (not reliant on the model).
+// Quick-reply buttons for each choice question.
 const CHIP_MAP = {
     old_boiler: ["Kondenzációs", "Hagyományos", "Nem tudom"],
     occupants: ["1–2 fő", "3–4 fő", "5 vagy több", "Nem tudom"],
     new_boiler: ["Kombi (24 kW)", "Tárolós (46 l)", "Külső tároló (125 l)", "Nem tudom"],
     flue: ["Tetőn keresztül", "Tégla kéménybe", "Társasházi gyűjtőkémény", "Nem tudom"],
-    rcd: ["Van", "Nincs", "Nem tudom"],
-    warranty: ["2 év (alap)", "5 év", "10 év", "Nem tudom"],
-    budget: ["1 millió Ft alatt", "1–1,5 millió Ft", "1,5–2 millió Ft", "2 millió Ft felett", "Még nem tudom"],
     timeline: ["Amint lehet", "Egy hónapon belül", "Fél éven belül", "Még idén", "Még nem tudom"],
 };
 
-// Order the questions are asked in: the project questions first, then the
-// contact details at the very end (only asked once the project is fully
-// described, i.e. the progress bar has reached 100%).
-const FIELD_ORDER = ["old_boiler", "occupants", "new_boiler", "flue", "rcd", "warranty",
-    "budget", "timeline", "name", "email", "phone", "postal_code"];
+// Order the questions are asked in. "photos" is an optional step (upload or
+// skip); the contact details come last, as one form.
+const FIELD_ORDER = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline",
+    "name", "phone", "postal_code"];
 
-// Only the project questions count toward the progress bar (the contact
-// details are not counted — the bar hits 100% right before we ask them).
-const PROGRESS_FIELDS = ["old_boiler", "occupants", "new_boiler", "flue", "rcd", "warranty",
-    "budget", "timeline"];
+// The steps that count toward the progress bar.
+const PROGRESS_FIELDS = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline"];
 
-// Maps a clicked chip label -> its canonical value, per field. Lets the BACKEND
-// record an answer the instant it arrives, without waiting for the model's
-// (one-step-behind) state block. Keys are the exact CHIP_MAP labels.
+// Clicked chip label -> canonical value, per field (lower-cased keys).
 const CHIP_VALUES = {
     old_boiler: { "kondenzációs": "kondenzacios", "hagyományos": "hagyomanyos", "nem tudom": "nem_tudom" },
     occupants: { "1–2 fő": "o_1_2", "3–4 fő": "o_3_4", "5 vagy több": "o_5plus", "nem tudom": "nem_tudom" },
     new_boiler: { "kombi (24 kw)": "kombi_24", "tárolós (46 l)": "tarolos_46", "külső tároló (125 l)": "kulso_125", "nem tudom": "nem_tudom" },
     flue: { "tetőn keresztül": "teto", "tégla kéménybe": "tegla_kemeny", "társasházi gyűjtőkémény": "gyujtokemeny", "nem tudom": "nem_tudom" },
-    rcd: { "van": "van", "nincs": "nincs", "nem tudom": "nem_tudom" },
-    warranty: { "2 év (alap)": "w_2", "5 év": "w_5", "10 év": "w_10", "nem tudom": "nem_tudom" },
-    budget: {
-        "1 millió ft alatt": "b_1m",
-        "1–1,5 millió ft": "b_1_1_5",
-        "1,5–2 millió ft": "b_1_5_2",
-        "2 millió ft felett": "b_2m",
-        "még nem tudom": "b_unsure",
-    },
     timeline: {
         "amint lehet": "t_asap",
         "egy hónapon belül": "t_month",
@@ -185,79 +203,76 @@ const CHIP_VALUES = {
     },
 };
 
-// The first still-unanswered field given the current state (= the question the
-// customer is being asked right now). Returns null when everything is filled.
+// Short typed answers we can map without the model ("kombi", "3", "társasház").
+// Only applied to SHORT replies with no question mark, so "mi a különbség a
+// kombi és a tárolós között?" still goes to the model as a question.
+const SYNONYMS = {
+    old_boiler: [
+        [/kondenz/, "kondenzacios"],
+        [/hagyom|nyílt|nyilt|turb|régi|regi|kéményes|kemenyes/, "hagyomanyos"],
+    ],
+    occupants: [
+        [/^(1|2|egy|kett|ketten|egyedül|egyedul)\b/, "o_1_2"],
+        [/^(3|4|három|harom|négy|negy|hárman|harman|négyen|negyen)\b/, "o_3_4"],
+        [/^([5-9]|1\d|öt|ot|hat|hét|het|nyolc|öten|oten|hatan|sokan)\b/, "o_5plus"],
+    ],
+    new_boiler: [
+        [/kombi/, "kombi_24"],
+        [/125|külső|kulso/, "kulso_125"],
+        [/tárol|tarol|46/, "tarolos_46"],
+    ],
+    flue: [
+        [/tető|teto|tetőn|teton/, "teto"],
+        [/gyűjtő|gyujto|társash|tarsash|közös|kozos/, "gyujtokemeny"],
+        [/tégla|tegla|kémény|kemeny/, "tegla_kemeny"],
+    ],
+    timeline: [
+        [/azonnal|sürgős|surgos|minél|minel|asap|amint/, "t_asap"],
+        [/hónap|honap|hét|het\b/, "t_month"],
+        [/fél év|fel ev|tavasz|nyár|nyar/, "t_halfyear"],
+        [/idén|iden|ősz|osz|tél|tel\b/, "t_thisyear"],
+    ],
+};
+const UNSURE_RE = /^(nem tudom|nemtudom|fogalmam sincs|nem tudom pontosan|nem vagyok biztos|passz)\.?$/;
+
 function pendingField(sel) {
-    const filled = (k) => sel && sel[k] != null && String(sel[k]).trim() !== "";
     for (const f of FIELD_ORDER) {
-        if (!filled(f)) return f;
+        if (!filled(sel, f)) return f;
     }
     return null;
 }
 
-// Parse a free-typed Hungarian budget amount into Ft. Handles e.g.
-// "1 500 000", "1500000", "1,5 millió", "1.5 m", "2 millió", "másfél millió",
-// "900 ezer", "1500 e". Returns null if no plausible amount is found.
-function parseBudgetAmount(text) {
-    if (typeof text !== "string") return null;
-    const t = text.toLowerCase().trim();
-
-    // Word form: "másfél millió" = 1.5 M
-    if (/másf[eé]l\s*milli/.test(t)) return 1_500_000;
-
-    // <number> millió | m | mFt  (comma/dot = decimal separator here)
-    const m = t.match(/(\d+(?:[.,]\d+)?)\s*(?:milli[óo]k?|m\b|mft)/);
-    if (m) {
-        const n = parseFloat(m[1].replace(",", "."));
-        if (!isNaN(n)) return Math.round(n * 1_000_000);
-    }
-
-    // <number> ezer | e | k  = thousands
-    const e = t.match(/(\d+(?:[.,]\d+)?)\s*(?:ezer|e\b|k\b)/);
-    if (e) {
-        const n = parseFloat(e[1].replace(",", "."));
-        if (!isNaN(n)) return Math.round(n * 1000);
-    }
-
-    // Bare number with space/dot/comma thousand separators -> raw Ft.
-    const digits = t.replace(/[^\d]/g, "");
-    if (digits) {
-        const n = parseInt(digits, 10);
-        if (!isNaN(n)) return n;
-    }
-    return null;
-}
-
-// Put a Ft amount into the right budget band. Implausibly small inputs
-// (e.g. "3", "90", "900") return null so they are rejected, not silently
-// bucketed — a real Ft budget is at least five digits.
-function bucketBudget(amount) {
-    if (amount == null || amount < 10000) return null;
-    if (amount < 1_000_000) return "b_1m";
-    if (amount < 1_500_000) return "b_1_1_5";
-    if (amount < 2_000_000) return "b_1_5_2";
-    return "b_2m";
-}
-
-// Given the field the customer is answering + their message, return the canonical
-// value. Choice fields match the clicked chip label (case-insensitive); contact
-// fields take the text as-is. Budget also accepts a typed amount, bucketed into
-// a band. Returns null if it can't be mapped (free-typed choice) so we fall back
-// to the model's captured value.
+// Given the field the customer is answering + their message, return the
+// canonical value, or null when it needs the model to interpret.
 function mapAnswer(field, answer) {
     if (typeof answer !== "string" || !answer.trim()) return null;
     const a = answer.trim();
-    if (field === "budget") {
-        // Exact chip label first, otherwise parse a typed amount into a band.
-        return CHIP_VALUES.budget[a.toLowerCase()] || bucketBudget(parseBudgetAmount(a));
+    const low = a.toLowerCase();
+
+    if (field === "photos") {
+        const m = low.match(/^(\d)\s*fot/);
+        if (m) return m[1];
+        if (/^(kihagyom|kihagy|most nem|nincs|nem)\b/.test(low)) return "0";
+        return null;
     }
     if (CHIP_VALUES[field]) {
-        return CHIP_VALUES[field][a.toLowerCase()] || null;
+        if (CHIP_VALUES[field][low]) return CHIP_VALUES[field][low];
+        const short = low.split(/\s+/).length <= 4 && !low.includes("?");
+        if (!short) return null;
+        if (UNSURE_RE.test(low)) return field === "timeline" ? "t_unsure" : "nem_tudom";
+        for (const [re, v] of SYNONYMS[field] || []) if (re.test(low)) return v;
+        return null;
     }
-    // free-text contact fields (budget is handled above)
-    if (["name", "email", "phone", "postal_code"].includes(field)) return a;
+    // Typed contact details (only when the customer ignores the form): accept
+    // them only when they look like the thing asked, so a question typed at
+    // this point is not stored as somebody's name.
+    if (field === "name") return a.split(/\s+/).length <= 4 && !/[?\d@]/.test(a) ? a : null;
+    if (field === "phone") return a.replace(/\D/g, "").length >= 7 && !/[a-z]{3,}/i.test(a) ? a : null;
+    if (field === "postal_code") { const m = a.match(/\b(\d{4})\b/); return m ? m[1] : null; }
+    if (field === "email") return EMAIL_RE.test(a) ? a : null;
     return null;
 }
+
 // Parse the hidden running-state block out of any assistant message.
 function extractData(text) {
     if (typeof text !== "string") return null;
@@ -267,41 +282,25 @@ function extractData(text) {
 }
 
 // Merge several state objects, keeping the last NON-EMPTY value per field.
-// This makes the state immune to the model blanking a field in a single turn:
-// once "csere" is set, a later empty value can't erase it (a real change to a
-// new non-empty value still overrides).
 function mergeState(...states) {
     const out = {};
     for (const s of states) {
         if (!s || typeof s !== "object") continue;
         for (const k of Object.keys(s)) {
             const v = s[k];
-            if (v != null && String(v).trim() !== "") out[k] = v;
+            if (v != null && typeof v !== "object" && String(v).trim() !== "") out[k] = String(v);
         }
     }
     return out;
 }
 
-function nextChips(sel) {
-    const f = pendingField(sel);
-    return f ? (CHIP_MAP[f] || []) : [];
-}
-
-// Human-readable Hungarian labels for the recap of what the customer chose.
+// Human-readable labels for the recap.
 const LABELS = {
     old_boiler: { kondenzacios: "Kondenzációs", hagyomanyos: "Hagyományos (nem kondenzációs)", nem_tudom: "Nem tudja (felmérésnél pontosítjuk)" },
     occupants: { o_1_2: "1–2 fő", o_3_4: "3–4 fő", o_5plus: "5 vagy több", nem_tudom: "Nem tudja" },
     new_boiler: { kombi_24: "Kondenzációs kombi (24 kW)", tarolos_46: "Kondenzációs tárolós, 46 l (24 kW)", kulso_125: "Kondenzációs + külső tároló, 125 l (24 kW)", nem_tudom: "Nem tudja (alap: kombi)" },
     flue: { teto: "Tetőn keresztül", tegla_kemeny: "Tégla kéménybe", gyujtokemeny: "Társasházi gyűjtőkémény", nem_tudom: "Nem tudja (alap: tetőn át)" },
-    rcd: { van: "Van", nincs: "Nincs", nem_tudom: "Nem tudja (felmérésnél pontosítjuk)" },
-    warranty: { w_2: "2 év (gyári alap)", w_5: "5 év", w_10: "10 év", nem_tudom: "Nem tudja (alap: 2 év)" },
-    budget: {
-        b_1m: "1 millió Ft alatt",
-        b_1_1_5: "1–1,5 millió Ft",
-        b_1_5_2: "1,5–2 millió Ft",
-        b_2m: "2 millió Ft felett",
-        b_unsure: "Még nem tudom",
-    },
+    warranty: { w_2: "2 év (gyári alap)", w_5: "5 év", w_10: "10 év" },
     timeline: {
         t_asap: "Amint lehet",
         t_month: "Egy hónapon belül",
@@ -312,183 +311,246 @@ const LABELS = {
 };
 const lbl = (group, key) => (LABELS[group] && LABELS[group][key]) || key || "—";
 
-// Drop any choice-field value the model invents that isn't a known canonical
-// value (e.g. it tries to record budget "90"). Free-text fields are untouched.
+// Drop any choice-field value the model invents that isn't a known value.
 function sanitizeChoices(s) {
     if (!s || typeof s !== "object") return s;
     for (const field of Object.keys(LABELS)) {
         const v = s[field];
-        if (v != null && String(v).trim() !== "" && !(String(v) in LABELS[field])) {
-            delete s[field];
-        }
+        if (v != null && String(v).trim() !== "" && !(String(v) in LABELS[field])) delete s[field];
     }
+    if (s.photos != null && !/^\d$/.test(String(s.photos))) delete s.photos;
     return s;
 }
 
-// Customer-facing estimate. Returns sections split by [[SPLIT]] so the widget
-// renders them as separate, easy-to-read chat bubbles. Numbers come from buildQuote.
-function renderCustomerQuote(quote, sel) {
-    // --- Bubble 1: the itemised price, grouped into scannable sections -------
-    const priceLines = [`Köszönöm, ${sel.name || ""}! Íme az előzetes árajánlata.`, ``];
+const photosLabel = (sel) => {
+    const n = Number(sel.photos || 0);
+    return n > 0 ? `${n} db csatolva` : "Nem küldött";
+};
+
+// ---------------------------------------------------------------------------
+//  Question templates — what the bot says when it asks each field. They follow
+//  the same scannable format the model is told to use: short acknowledgement,
+//  the question in bold on its own line, then at most three bullets.
+// ---------------------------------------------------------------------------
+const ACKS = ["Rendben.", "Értem.", "Köszönöm!", "Szuper.", "Rendben."];
+
+const RECOMMEND = {
+    o_1_2: "1–2 főhöz általában a **kombi** is bőven elég.",
+    o_3_4: "3–4 főhöz a **tárolós (46 l)** a kényelmes választás.",
+    o_5plus: "5 vagy több főhöz a **külső 125 literes** tárolót ajánljuk.",
+};
+const RECOMMEND_CHIP = { o_1_2: "Kombi (24 kW)", o_3_4: "Tárolós (46 l)", o_5plus: "Külső tároló (125 l)" };
+
+function questionText(field, sel) {
+    switch (field) {
+        case "old_boiler":
+            return [
+                "**Milyen készüléket kell leszerelni?**",
+                "• **Kondenzációs** – modern, műanyag füstcsővel",
+                "• **Hagyományos** – régi, nyílt égésterű vagy turbós",
+                "• Ha nem biztos, nyomja a **Nem tudom** gombot",
+            ].join("\n");
+        case "occupants":
+            return [
+                "**Hányan laknak a lakásban?**",
+                "• Ebből tudjuk, mennyi **melegvíz** kell",
+                "• Ez alapján ajánljuk a **készülék típusát**",
+            ].join("\n");
+        case "new_boiler": {
+            const lines = ["**Milyen új készüléket szeretne?**", "Mindegyik **kondenzációs**."];
+            if (RECOMMEND[sel.occupants]) lines.push(RECOMMEND[sel.occupants]);
+            lines.push(
+                "• **Kombi (24 kW)** – azonnal melegít, kis helyigény",
+                "• **Tárolós 46 l** – több melegvíz egyszerre",
+                "• **Külső 125 l** – nagy családnak",
+            );
+            return lines.join("\n");
+        }
+        case "flue":
+            return [
+                "**Hova vezet most a kazán füstcsöve?**",
+                "• **Tetőn keresztül** – a csövet a tetőn vezették ki",
+                "• **Tégla kéménybe** – családi ház, épített kémény",
+                "• **Gyűjtőkémény** – társasházi, közös kémény",
+            ].join("\n");
+        case "photos":
+            return [
+                "**Lefotózná a mostani kazánt?**",
+                "• **Elölről** – ha látszik, a típustáblával együtt",
+                "• **A füstcsövet** – hová megy ki",
+                "• Nem kötelező, de így a kolléga **előre felkészül**",
+            ].join("\n");
+        case "timeline":
+            return "**Mikorra szeretné a cserét?**";
+        case "name":
+            return [
+                "Köszönöm, minden megvan a kalkulációhoz!",
+                "",
+                "**Már csak az elérhetőségei kellenek.**",
+                "• Ezen a számon egyeztetjük az **ingyenes felmérést**",
+                "• Utána **azonnal látja** az induló árat",
+            ].join("\n");
+        default:
+            return null;
+    }
+}
+
+// The response the widget needs to ask `field` next.
+function askPayload(field, sel) {
+    const progress = PROGRESS_FIELDS.filter((f) => filled(sel, f)).length;
+    return {
+        chips: CHIP_MAP[field] || [],
+        recommendedChip: field === "new_boiler" ? (RECOMMEND_CHIP[sel.occupants] || null) : null,
+        photoStep: field === "photos",
+        contactForm: field === "name",
+        state: sel,
+        progress,
+        progressTotal: PROGRESS_FIELDS.length,
+    };
+}
+
+// ---------------------------------------------------------------------------
+//  Customer-facing quote. Bubbles split by [[SPLIT]].
+// ---------------------------------------------------------------------------
+function renderPriceBubble(quote, sel) {
+    const lines = [`Köszönöm, ${sel.name || ""}! Íme az előzetes ajánlata.`, ``];
     for (const [key, title] of SECTIONS) {
         const rows = quote.items.filter(i => i.sec === key);
         if (!rows.length) continue;
-        priceLines.push(`## ${title}`);
-        rows.forEach(i => priceLines.push(`• ${i.label} — **${formatHuf(i.huf)}**`));
-        priceLines.push(``);
+        lines.push(`## ${title}`);
+        rows.forEach(i => lines.push(`• ${i.label} — **${formatHuf(i.huf)}**`));
+        lines.push(``);
     }
-    priceLines.push(`>> Becsült végösszeg: ${formatHuf(quote.total)}`);
-    priceLines.push(`Bruttó ár, ÁFÁ-val — a készülékkel és a teljes beépítéssel együtt.`);
-    const priceBubble = priceLines.join("\n");
+    lines.push(`>> Induló ár: ${formatHuf(quote.total)}-tól`);
+    lines.push(`Bruttó ár, ÁFÁ-val — a készülékkel és a teljes beépítéssel együtt.`);
+    return lines.join("\n");
+}
 
-    // --- Bubble 2: what the price covers, and what it deliberately doesn't ---
-    // The exclusions matter as much as the number: they are what stops the
-    // survey turning into an argument about a figure the customer anchored on.
+function renderCustomerQuote(quote, sel, area) {
+    const priceBubble = renderPriceBubble(quote, sel);
+
     const included = [
         `A kondenzációs gázkészülék ára`,
         `A teljes beszerelés és a gyári üzembe helyezés`,
         `A régi készülék bontása és elszállítása`,
         `Vizes rendszerre kötés mágneses iszapleválasztóval`,
     ];
-    if (sel.old_boiler === "hagyomanyos") {
-        included.push(`Kéményátalakítás saválló béléscsővel`);
-    }
+    if (sel.old_boiler === "hagyomanyos") included.push(`Kéményátalakítás saválló béléscsővel`);
     included.push(`${lbl("warranty", sel.warranty)} garancia a készülékre`);
     included.push(`Ügyintézés és a dokumentált beüzemelés`);
 
     const excluded = [
+        ...surchargeLines(sel),
         `Gázvezeték áthelyezése vagy cseréje`,
         `Radiátorcsere és a fűtési rendszer állapotától függő pótmunka`,
         `Bontás utáni faljavítás, burkolás, festés`,
         `Társasházi engedélyeztetés külön díja, ha a ház ilyet kér`,
-        `Egyedi, nem szabványos kéménymegoldás`,
     ];
 
     const noteBubble = [
         `## Az árban benne van`,
         ...included.map(x => `• ${x}`),
         ``,
-        `## Az árban nincs benne`,
+        `## Ami ezen felül jöhet`,
         ...excluded.map(x => `• ${x}`),
         ``,
-        `Ez **előzetes, tájékoztató becslés**. A végleges, fix árat a helyszíni felmérés után adjuk meg — utólagos ráfizetés nélkül.`,
+        `Ez az **induló ár**: ennél kevesebb nem lesz. A felmérésen derül ki, kell-e bármi a fenti listából — a végleges, **fix árat** előre megmondjuk, utólagos ráfizetés nélkül.`,
     ].join("\n");
 
-    // --- Bubble 3: recap of the answers + what happens next -----------------
-    const recapLines = [
+    const recap = [
         `## A munka`,
         `• Leszerelendő készülék: **${lbl("old_boiler", sel.old_boiler)}**`,
         `• Lakók száma: **${lbl("occupants", sel.occupants)}**`,
         `• Új kazán: **${lbl("new_boiler", sel.new_boiler)}**`,
         `• Kémény: **${lbl("flue", sel.flue)}**`,
-        `• Életvédelmi (Fi) relé: **${lbl("rcd", sel.rcd)}**`,
-        `• Kért garancia: **${lbl("warranty", sel.warranty)}**`,
-        ``,
-        `## Ütemezés`,
-        `• Tervezett keret: **${lbl("budget", sel.budget)}**`,
-        `• Tervezett kivitelezés: **${lbl("timeline", sel.timeline)}**`,
+        `• Fotók: **${photosLabel(sel)}**`,
+        `• Tervezett csere: **${lbl("timeline", sel.timeline)}**`,
         ``,
         `## Az Ön adatai`,
         `• Név: **${sel.name || "—"}**`,
-        `• E-mail: **${sel.email || "—"}**`,
         `• Telefon: **${sel.phone || "—"}**`,
-        `• Irányítószám: **${sel.postal_code || "—"}**`,
+    ];
+    if (sel.email) recap.push(`• E-mail: **${sel.email}**`);
+    recap.push(`• Irányítószám: **${sel.postal_code || "—"}**`);
+    if (area === "outside") {
+        recap.push(``, `Az irányítószáma **kívül eshet** a szokásos területünkön (Budapest és agglomeráció). Kollégánk telefonon egyeztet, hogy vállalható-e.`);
+    }
+    recap.push(
         ``,
         `## Mi történik ezután`,
-        `• Kollégánk **hamarosan felhívja** a megadott számon.`,
-        `• Egyeztetünk egy **ingyenes helyszíni felmérést**.`,
-        `• A felmérés után **fix, végleges árat** kap, és jöhet az **egynapos csere**.`,
+        `• **Válasszon időpontot** lent az ingyenes felméréshez`,
+        `• Kollégánk **visszaigazolja** telefonon`,
+        `• A felmérés után **fix árat** kap, és jöhet az **egynapos csere**`,
         ``,
-        `Ha addig kérdése van, hívjon: **+36 20 399 0093**`,
-    ];
-    if (EMAIL_OFFER_ENABLED) {
-        recapLines.push(``);
-        recapLines.push(`Szeretné, hogy e-mailben is elküldjük az ajánlatot?`);
-    }
+        `Ha addig kérdése van, hívjon: **${PHONE}**`,
+    );
 
-    return [priceBubble, noteBubble, recapLines.join("\n")].join("\n[[SPLIT]]\n");
+    return [priceBubble, noteBubble, recap.join("\n")].join("\n[[SPLIT]]\n");
+}
+
+// What the widget needs for the controls under the quote.
+function postQuotePayload(sel) {
+    return {
+        warranty: sel.warranty || "w_2",
+        warrantyOptions: Object.entries(PRICES.warranty).map(([value, p]) => ({
+            value,
+            label: value.replace("w_", "") + " év",
+            extra: p.huf ? `+${formatHuf(p.huf)}` : "ingyenes",
+        })),
+        emailOffer: EMAIL_OFFER_ENABLED && !!sel.email,
+    };
 }
 
 // ---------------------------------------------------------------------------
-//  System prompt (Hungarian) — conversation + structured output contract
+//  System prompt (Hungarian) — only used for free-typed messages
 // ---------------------------------------------------------------------------
 const SYSTEM_PROMPT = `SZEMÉLYISÉG
-Te az "Aqua System" digitális árajánló asszisztense vagy. Egynapos gázkészülék- és kazáncserével foglalkozó épületgépész csapat nevében beszélsz. Kizárólag MAGYARUL válaszolj.
+Te az "Aqua System" digitális árajánló asszisztense vagy. Egynapos gázkészülék- és kazáncserével foglalkozó épületgépész csapat nevében beszélsz. Kizárólag MAGYARUL válaszolj. Soha ne használj emojit.
 
 HANGNEM
 - Udvarias, közvetlen, szakértő és tömör. Lehetőleg 45 szó alatt válaszolj.
-- Egyszerre EGY kérdést tegyél fel. Sose kérdezz több dolgot egyszerre.
+- Egyszerre EGY kérdést tegyél fel.
 - Sose találgass árat és sose számolj — az árat a rendszer számolja ki a végén.
 
-TUDÁSBÁZIS — A CÉGRŐL (csak akkor használd, ha az ügyfél KÖZBEN kérdez valamit — utána MINDIG térj vissza a soron következő kérdéshez, ugyanabban a válaszban)
+TUDÁSBÁZIS — A CÉGRŐL (ha az ügyfél KÖZBEN kérdez valamit, válaszolj röviden, majd UGYANABBAN a válaszban térj vissza a soron következő kérdéshez)
 - Cég: Aqua System Service Kft. — egynapos gázkészülék- és kazáncsere, teljes körű épületgépészeti kivitelezéssel.
-- Elérhetőségek: telefon +36 20 399 0093, e-mail keszulekcsere@aqua-system.hu.
+- Elérhetőségek: telefon ${PHONE}, e-mail ${COMPANY_EMAIL}.
 - Szolgáltatási terület: Budapest és az agglomeráció — pl. Érd, Diósd, Tárnok, Halásztelek. Ha bizonytalan a cím, mondd: telefonon gyorsan tisztázzák.
 - Tapasztalat: közel 50 év épületgépészeti tapasztalat, 500+ sikeres készülékcsere.
-- EGYNAPOS CSERE: a legtöbb készülékcserét EGYETLEN munkanap alatt elvégezzük — a régi leszerelésétől az új beszerelésén át a beüzemelésig. A pontos időt a helyszíni felmérés után erősítjük meg.
-- FONTOS: az Aqua System KIZÁRÓLAG kondenzációs gázkészüléket épít be (modern, hatékony, kb. 15–30%-kal kevesebbet fogyaszt egy régi típusnál). Hagyományos, nyílt égésterű vagy turbós készüléket NEM szerelünk be. Ha az ügyfél ilyet kérne, magyarázd el kedvesen, hogy ma már a kondenzációs a szabvány, és ezt építjük be.
+- EGYNAPOS CSERE: a legtöbb cserét EGYETLEN munkanap alatt elvégezzük — leszereléstől a beüzemelésig. A pontos időt a felmérés után erősítjük meg.
+- KIZÁRÓLAG kondenzációs gázkészüléket építünk be (kb. 15–30%-kal kevesebbet fogyaszt egy régi típusnál). Hagyományos, nyílt égésterű vagy turbós készüléket NEM szerelünk be — ezt kedvesen magyarázd el, ha kérik.
 - Ügyintézés: a teljes folyamatot mi visszük — készülék kiválasztása, engedélyeztetés, papírmunka, dokumentált beüzemelés.
-- Árazás elve: a felmérés után FIX, előre megmondott árat adunk — utólagos ráfizetés és rejtett költség nincs. Az ár tartalmazza a szerelést, a beüzemelést és az ügyintézést is.
-- Garancia: minden kivitelezésre és a beszerelt új gázkészülékre is hivatalos garanciát adunk. A munka után is elérhetőek maradunk.
-- Mikor kell cserélni: 12 évnél idősebb készüléket érdemes felülvizsgáltatni, 18 évnél idősebbnél már ajánlott a csere (többet fogyaszt, gyakrabban hibásodik, kevésbé biztonságos).
-- Gázszag esetén MINDIG mondd: azonnal zárja el a gázt, szellőztessen, és hívjon telefonon — ne kísérletezzen. Távolról ne diagnosztizálj komolyabb hibát.
-- Ha olyat kérdeznek, ami nincs itt (pl. pontos ár egy konkrét munkára, aznapi időpont), ne találgass: irányítsd telefonra (+36 20 399 0093) vagy mondd, hogy a felmérésnél a kollégák pontosítják.
+- Árazás elve: a végén az ügyfél INDULÓ árat lát, és mellette pontosan felsorolva, mi jöhet még hozzá. A felmérés után FIX, előre megmondott árat adunk — utólagos ráfizetés nincs.
+- Garancia: 2 év gyári alapgarancia; az ajánlat végén 5 vagy 10 évre bővíthető felárral.
+- Mikor kell cserélni: 12 évnél idősebb készüléket érdemes felülvizsgáltatni, 18 évnél idősebbnél már ajánlott a csere.
+- Gázszag esetén MINDIG mondd: azonnal zárja el a gázt, szellőztessen, és hívja a gázszolgáltató hibabejelentőjét — ne kísérletezzen. Távolról ne diagnosztizálj hibát.
+- Márkák: SOHA ne nevezz meg konkrét márkát vagy típust. A pontos márkát és típust a felmérésen választjuk ki közösen, az otthonhoz és a kerethez igazítva.
+- SOHA ne állíts olyat a cégről, ami nincs ebben a tudásbázisban.
+- Ha olyat kérdeznek, ami nincs itt, ne találgass: irányítsd telefonra (${PHONE}) vagy mondd, hogy a felmérésnél pontosítják.
 
-CÉL
-Végigvezeted az ügyfelet az alábbi kérdéseken, majd elkéred az elérhetőségeit. A kérdéseket természetesen, sorban tedd fel. FONTOS: a rendszer már köszöntötte az ügyfelet — NE köszönj újra, rögtön az 1. kérdéssel kezdj.
-
-KÖZÉRTHETŐSÉG (nagyon fontos!)
-Az ügyfél laikus, nem szakember. Minden kérdést EGYSZERŰEN, hétköznapi nyelven tegyél fel, és a szakszavakat MINDIG magyarázd el. Ha az ügyfél nem ért valamit vagy azt írja "nem tudom" / "ez mit jelent", magyarázd el türelmesen, hétköznapi példával, és kérd, hogy a legjobb tudása szerint válaszoljon.
+KÖZÉRTHETŐSÉG
+Az ügyfél laikus. Egyszerűen, hétköznapi nyelven fogalmazz, a szakszavakat magyarázd el. Ha nem tudja a választ, fogadd el a "nem_tudom" értéket és lépj tovább — a rendszer a legkedvezőbb változattal számol, és a különbözetet külön kiírja.
 
 FORMÁZÁS — KÖTELEZŐ MINDEN KÉRDÉSNÉL
-Az ügyfél PÁSZTÁZZA a szöveget, nem olvassa. Ezért a válaszod SOHA ne legyen egyetlen hosszú, zárójeles mondat. Minden kérdésed pontosan így épüljön fel:
-1) Ha nyugtázod az előző választ, az EGY rövid szó legyen a saját sorában (pl. "Rendben." / "Köszönöm!"). Utána üres sor.
-2) MAGA A KÉRDÉS **félkövérrel**, a saját sorában, rövid mondatként. Például: **Hányan laknak a lakásban?**
-3) Ha magyarázat kell, utána LEGFELJEBB 3 rövid felsorolási pont, mindegyik "• " jellel kezdve. A pont ELEJÉN álljon a kulcsszó **félkövérrel**, utána gondolatjel és legfeljebb 6-8 szó.
-SZABÁLYOK: soha ne írj hosszú, zárójeles magyarázó bekezdést. Soha ne szedj félkövérrel egész mondatot — csak a kérdést és a kulcsszavakat. Ha a gombok magukért beszélnek (keret, határidő), elég a félkövér kérdés, felsorolás nélkül.
+1) Ha nyugtázol, az EGY rövid szó legyen a saját sorában. Utána üres sor.
+2) MAGA A KÉRDÉS **félkövérrel**, a saját sorában.
+3) Legfeljebb 3 rövid pont, "• " jellel, a kulcsszó **félkövérrel**.
+Soha ne írj hosszú, zárójeles bekezdést.
 
-PÉLDA a helyes formára:
-Rendben.
+KÉRDÉSEK SORRENDJE (egyesével):
+1. old_boiler — **Milyen készüléket kell leszerelni?** Értékek: "kondenzacios", "hagyomanyos", "nem_tudom". (A hagyományos régi kémény nem jó kondenzációs kazánhoz — a rendszer beleszámolja, ne kérdezd külön.)
+2. occupants — **Hányan laknak a lakásban?** Értékek: "o_1_2", "o_3_4", "o_5plus", "nem_tudom".
+3. new_boiler — **Milyen új készüléket szeretne?** Mindegyik kondenzációs. 1–2 főnél kombit, 3–4 főnél tárolósat, 5+ főnél külső tárolósat ajánlj. Értékek: "kombi_24", "tarolos_46", "kulso_125", "nem_tudom".
+4. flue — **Hova vezet most a kazán füstcsöve?** Értékek: "teto", "tegla_kemeny", "gyujtokemeny", "nem_tudom".
+5. photos — **Lefotózná a mostani kazánt?** Nem kötelező; a fotót a gombbal lehet csatolni a beszélgetés alatt. Ha az ügyfél nem akar fotót küldeni, az érték "0".
+6. timeline — **Mikorra szeretné a cserét?** Értékek: "t_asap", "t_month", "t_halfyear", "t_thisyear", "t_unsure".
+UTÁNA az elérhetőségeket (név, telefon, irányítószám, opcionálisan e-mail) a RENDSZER kéri be EGY ŰRLAPON. Csak egy rövid átvezető mondatot írj. Ha az ügyfél mégis szabad szöveggel adja meg őket, kérd egyesével a hiányzót (name, phone, postal_code).
 
-**Milyen készüléket kell leszerelni?**
-• **Kondenzációs** – modern, műanyag füstcsővel
-• **Hagyományos** – régi, nyílt égésterű vagy turbós
-• Hagyományosnál a **kéményt is át kell alakítani**
+NE kérdezd: életvédelmi relét, garanciát, költségkeretet — ezek az ajánlatnál jelennek meg.
 
-FONTOS — "NEM TUDOM": minden választós kérdésnél van "Nem tudom" lehetőség is. Ha az ügyfél nem tudja vagy bizonytalan, fogadd el a "nem_tudom" értéket és lépj tovább — a rendszer ilyenkor a legkedvezőbb (legolcsóbb) feltételezéssel számol, a felmérés pedig pontosít. NE erőltesd a választ.
-
-KÉRDÉSEK SORRENDJE (egyesével, mindig csak EGY kérdés!). ELŐSZÖR a projekttel kapcsolatos 1–8. kérdést tedd fel, és CSAK utána, a végén kérd el az elérhetőségeket (9–12.):
-1. old_boiler — kérdés: **Milyen készüléket kell leszerelni?** Pontok: • **Kondenzációs** – modern, műanyag füstcsővel • **Hagyományos** – régi, nyílt égésterű vagy turbós • Hagyományosnál a **kéményt is át kell alakítani**. (Háttér neked: a régi kémény nem alkalmas kondenzációs kazánhoz, saválló béléscső kell — ezt a rendszer beleszámolja, ne kérdezd külön.) Értékek: "kondenzacios", "hagyomanyos", "nem_tudom".
-2. occupants — kérdés: **Hányan laknak a lakásban?** Pontok: • Ebből tudjuk, mennyi **melegvíz** kell • Ez alapján méretezzük a **készülék méretét**. Értékek: "o_1_2" (1–2 fő), "o_3_4" (3–4 fő), "o_5plus" (5 vagy több), "nem_tudom".
-3. new_boiler — kérdés: **Milyen új készüléket szeretne?** A kérdés alatt egy rövid sor: "Mindegyik **kondenzációs**." Pontok: • **Kombi (24 kW)** – azonnal melegít, kis helyigény • **Tárolós 46 l** – több melegvíz egyszerre • **Külső 125 l** – nagy családnak. Vedd figyelembe a lakók számát: 1–2 főnél a kombit, 3–4 főnél a tárolósat, 5+ főnél a külső tárolósat ajánld egy fél mondatban. Értékek: "kombi_24", "tarolos_46", "kulso_125", "nem_tudom".
-4. flue — kérdés: **Hogyan távozik a kazán füstgáza?** Pontok: • **Tetőn keresztül** – a tetőn kivezetve • **Tégla kéménybe** – meglévő, épített kémény • **Gyűjtőkémény** – társasházi, közös kémény. Értékek: "teto", "tegla_kemeny", "gyujtokemeny", "nem_tudom".
-5. rcd — kérdés: **Van a lakásban életvédelmi (Fi-)relé?** Pontok: • Biztonsági kapcsoló a **biztosítékszekrényben** • Általában **„TESZT" gomb** van rajta • **Áramütés ellen** véd. Értékek: "van", "nincs", "nem_tudom".
-6. warranty — kérdés: **Hány év garanciát szeretne a készülékre?** Pontok: • **2 év** – gyári alapgarancia, ingyenes • **5 vagy 10 év** – felárral kiterjeszthető. Értékek: "w_2", "w_5", "w_10", "nem_tudom".
-7. budget — kérdés: **Nagyjából milyen összeget szánna a beruházásra?** Felsorolás NEM kell, a gombok magukért beszélnek. NE sorold fel a sávokat szövegben — a választógombokat a rendszer megjeleníti alattuk. A sávok (csak a te tudásodra): 1 millió Ft alatt → b_1m; 1–1,5 millió Ft → b_1_1_5; 1,5–2 millió Ft → b_1_5_2; 2 millió Ft felett → b_2m; "Még nem tudom" → b_unsure. Ha az ügyfél konkrét számot mond, sorold be a megfelelő sávba.
-8. timeline — kérdés: **Mikorra szeretné a kivitelezést?** Felsorolás NEM kell, a gombok magukért beszélnek. Lehetőségek (csak a te tudásodra): Amint lehet → t_asap; Egy hónapon belül → t_month; Fél éven belül → t_halfyear; Még idén → t_thisyear; "Még nem tudom" → t_unsure. Az ügyfél szabad szöveggel is válaszolhat — sorold be a legközelebbi lehetőségre.
-
-ELÉRHETŐSÉGEK — a 8. kérdés UTÁN. FONTOS: a négy elérhetőségi adatot a RENDSZER kéri be EGYETLEN ŰRLAPON, közvetlenül a te válaszod alatt. Ezért a 8. kérdés után CSAK EGY rövid átvezető mondatot írj, és NE tedd fel egyesével a 9–12. kérdést, NE kérdezd külön a nevet. Ez is a FORMÁZÁS szabályai szerint nézzen ki. Példa a teljes válaszodra:
-"Köszönöm, minden megvan a kalkulációhoz!
-
-**Már csak az elérhetőségei kellenek.**
-• Erre küldjük a **személyre szabott árajánlatot**
-• Ezen egyeztetjük az **ingyenes felmérést**"
-A mezők, amiket az űrlap bekér (csak a te tudásodra): 9. name, 10. email, 11. phone, 12. postal_code.
-KIVÉTEL: ha az ügyfél mégis egyesével, szabad szöveggel válaszol (mert nem az űrlapot használja), akkor kérdezd a soron következő hiányzó adatot egyesével, röviden megindokolva, miért kéred.
-
-MEGJEGYZÉS: A vizes rendszerre kötést, a gyári üzembe helyezést és a régi kazán/kémény bontását NE kérdezd meg — ezek minden ajánlatban benne vannak, a rendszer automatikusan hozzáadja. A kéményátalakítást se kérdezd külön: ha az 1. kérdésre "hagyományos" a válasz, a rendszer magától hozzáadja.
-
-SZABÁLYOK
-- Az ügyfél írhat szabad szöveggel is — értelmezd a válaszát és rendeld hozzá a megfelelő értéket.
-- Ha egy válasz nem egyértelmű, EGYSZER kérdezz vissza, utána lépj tovább.
-- Ne ígérj fix időpontot. Árat ne mondj a folyamat közben.
-
-REJTETT ÁLLAPOT (KÖTELEZŐ MINDEN VÁLASZBAN)
-MINDEN egyes válaszod legvégére tedd ki az eddig ismert adatokat ebben a rejtett blokkban (az ügyfél NEM látja). A még meg nem kérdezett mezők értéke üres string (""). SOSE találgass — csak azt töltsd ki, amit az ügyfél ténylegesen megválaszolt:
-<!--DATA:{"old_boiler":"","occupants":"","new_boiler":"","flue":"","rcd":"","warranty":"","name":"","email":"","phone":"","postal_code":"","budget":"","timeline":""}-->
-A blokkban MINDEN kulcs mindig szerepeljen, csak az értékeket töltsd. Engedélyezett értékek: old_boiler: kondenzacios|hagyomanyos|nem_tudom; occupants: o_1_2|o_3_4|o_5plus|nem_tudom; new_boiler: kombi_24|tarolos_46|kulso_125|nem_tudom; flue: teto|tegla_kemeny|gyujtokemeny|nem_tudom; rcd: van|nincs|nem_tudom; warranty: w_2|w_5|w_10|nem_tudom; budget: b_1m|b_1_1_5|b_1_5_2|b_2m|b_unsure; timeline: t_asap|t_month|t_halfyear|t_thisyear|t_unsure. A többi (name, email, phone, postal_code) szabad szöveg.
-Amikor minden szükséges mező megvan, írj egy RÖVID lezáró mondatot (pl. "Köszönöm, összeállítom az árajánlatot!") — és továbbra is tedd ki a teljes, kitöltött DATA blokkot. Az árat NE te írd ki; a rendszer számolja és mutatja.
-A választógombokat a rendszer automatikusan megjeleníti — neked nem kell gombokat kiírnod.`;
+REJTETT ÁLLAPOT (KÖTELEZŐ MINDEN VÁLASZ VÉGÉN, az ügyfél NEM látja). Csak azt töltsd ki, amit az ügyfél ténylegesen megválaszolt, a többi "":
+<!--DATA:{"old_boiler":"","occupants":"","new_boiler":"","flue":"","photos":"","timeline":"","name":"","email":"","phone":"","postal_code":""}-->
+Az árat NE te írd ki; a rendszer számolja. A választógombokat a rendszer jeleníti meg.`;
 
 // ---------------------------------------------------------------------------
 //  AI providers — each takes normalized messages and returns { ok, text, error }
@@ -536,11 +598,8 @@ async function callGemini(messages) {
                     generationConfig: {
                         temperature: 0.4,
                         maxOutputTokens: 1000,
-                        // gemini-2.5-flash is a "thinking" model: its internal
-                        // reasoning tokens count against maxOutputTokens and were
-                        // starving the visible answer (messages cut off mid-word).
-                        // This bot follows a fixed script — no reasoning needed —
-                        // so disable thinking. Faster, cheaper, and no truncation.
+                        // Thinking tokens count against maxOutputTokens and were
+                        // truncating answers; this bot follows a fixed script.
                         thinkingConfig: { thinkingBudget: 0 },
                     },
                 }),
@@ -548,13 +607,8 @@ async function callGemini(messages) {
         );
         const data = await res.json();
         const cand = data.candidates?.[0];
-        // Join every text part (defensive — normally there is just one).
-        const text = (cand?.content?.parts || [])
-            .map(p => p?.text || "")
-            .join("");
-        if (cand?.finishReason === "MAX_TOKENS") {
-            console.warn("Gemini hit MAX_TOKENS — answer may be truncated.");
-        }
+        const text = (cand?.content?.parts || []).map(p => p?.text || "").join("");
+        if (cand?.finishReason === "MAX_TOKENS") console.warn("Gemini hit MAX_TOKENS — answer may be truncated.");
         if (text) return { ok: true, text };
         return { ok: false, error: data.error?.message || JSON.stringify(data) };
     } catch (e) {
@@ -562,34 +616,70 @@ async function callGemini(messages) {
     }
 }
 
-// Price, log, notify and render the finished quote. Shared by the fast path
-// (contact form completed the state) and the normal end-of-conversation turn.
-async function finishWithQuote(sel, response, progressTotal) {
+// ---------------------------------------------------------------------------
+//  Photos: the widget shrinks them to JPEG in the browser and sends them only
+//  with the final (contact form) request. They are attached to the owner's
+//  e-mail — no storage needed. Anything that isn't a small image is dropped.
+// ---------------------------------------------------------------------------
+const MAX_PHOTOS = 3;
+const MAX_PHOTO_BYTES = 1_500_000;
+
+function cleanPhotos(photos) {
+    if (!Array.isArray(photos)) return [];
+    const out = [];
+    for (const p of photos.slice(0, MAX_PHOTOS)) {
+        const m = typeof p === "string" && p.match(/^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/);
+        if (!m) continue;
+        if (m[2].length * 0.75 > MAX_PHOTO_BYTES) continue;
+        out.push({ filename: `kazan-foto-${out.length + 1}.${m[1] === "jpeg" ? "jpg" : m[1]}`, content: m[2] });
+    }
+    return out;
+}
+
+// Price, notify and render the finished quote.
+async function finishWithQuote(sel, response, photos) {
+    sel.warranty = sel.warranty || "w_2";
     const quote = buildQuote(sel);
+    const area = classifyArea(sel.postal_code);
+    const attachments = cleanPhotos(photos);
 
     console.log("\n========================================");
     console.log("ÚJ ÁRAJÁNLAT / LEAD");
-    console.log(`Ügyfél: ${sel.name} | ${sel.phone} | ${sel.email}`);
-    console.log(`Irsz.: ${sel.postal_code} | Keret: ${sel.budget}`);
-    console.log(`Becsült végösszeg: ${formatHuf(quote.total)}`);
+    console.log(`Ügyfél: ${sel.name} | ${sel.phone} | ${sel.email || "-"}`);
+    console.log(`Irsz.: ${sel.postal_code} (${area}) | Kivitelezés: ${sel.timeline} | Fotók: ${attachments.length}`);
+    console.log(`Induló ár: ${formatHuf(quote.total)}`);
     console.log("========================================\n");
 
-    // Always notify the owner + log the lead into the Google Sheet.
-    // Run both in parallel; neither blocks the other or the response.
     await Promise.all([
-        sendQuoteEmail(sel, quote, { to: process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com", toCustomer: false }),
-        sendLeadToSheet(sel, quote),
+        sendOwnerEmail(sel, quote, { area, attachments }),
+        sendLeadToSheet(sel, quote, area),
     ]);
 
     return response.status(200).json({
-        answer: renderCustomerQuote(quote, sel),
+        answer: renderCustomerQuote(quote, sel, area),
         chips: [],
-        emailOffer: EMAIL_OFFER_ENABLED,
+        postQuote: postQuotePayload(sel),
         lead: { sel, quote },
         state: sel,
-        progress: progressTotal,
-        progressTotal,
+        progress: PROGRESS_FIELDS.length,
+        progressTotal: PROGRESS_FIELDS.length,
     });
+}
+
+// The lead object comes back from the browser on post-quote actions. Keep only
+// known string fields, and always re-price from the answers — never trust a
+// total sent by the client.
+function cleanLeadSel(lead) {
+    const raw = lead && lead.sel && typeof lead.sel === "object" ? lead.sel : null;
+    if (!raw) return null;
+    const keys = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline",
+        "warranty", "name", "email", "phone", "postal_code"];
+    const sel = {};
+    for (const k of keys) {
+        if (raw[k] != null && typeof raw[k] !== "object") sel[k] = String(raw[k]).slice(0, 120);
+    }
+    sanitizeChoices(sel);
+    return isQuoteReady(sel) ? sel : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -600,330 +690,386 @@ export default async function handler(request, response) {
     response.setHeader("Access-Control-Allow-Headers", "Content-Type");
     response.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 
-    if (request.method === "OPTIONS") {
-        return response.status(200).end();
-    }
+    if (request.method === "OPTIONS") return response.status(200).end();
 
     try {
-        const { question, history, action, lead, state } = request.body || {};
+        const { question, history, action, lead, state, photos } = request.body || {};
 
-        // --- ACTION: customer asked us to e-mail them the quote ---
-        if (action === "email_customer" && lead?.sel && lead?.quote) {
-            const ok = await sendQuoteEmail(lead.sel, lead.quote, {
-                to: lead.sel.email,
-                toCustomer: true,
-            });
+        // --- ACTION: first question, straight from the template ---------------
+        if (action === "start") {
+            const sel = {};
+            return response.status(200).json({ answer: questionText("old_boiler", sel), ...askPayload("old_boiler", sel) });
+        }
+
+        // --- ACTION: customer changed the warranty on the finished quote -------
+        if (action === "set_warranty") {
+            const sel = cleanLeadSel(lead);
+            const w = request.body.warranty;
+            if (!sel || !PRICES.warranty[w]) return response.status(400).json({ error: "bad request" });
+            sel.warranty = w;
+            const quote = buildQuote(sel);
+            return response.status(200).json({ answer: renderPriceBubble(quote, sel), lead: { sel, quote } });
+        }
+
+        // --- ACTION: customer picked a survey slot ------------------------------
+        if (action === "book_survey") {
+            const sel = cleanLeadSel(lead);
+            const b = request.body.booking || {};
+            const okDate = typeof b.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.date);
+            const okWindow = ["delelott", "delutan", "barmikor"].includes(b.window);
+            if (!sel || !okDate || !okWindow) return response.status(400).json({ error: "bad request" });
+            const booking = { date: b.date, dayLabel: String(b.dayLabel || b.date).slice(0, 40), window: b.window };
+            const quote = buildQuote(sel);
+            await sendBookingEmail(sel, quote, booking);
             return response.status(200).json({
-                answer: ok
-                    ? `Elküldtük az árajánlatot a megadott e-mail címre (${lead.sel.email}). 📧 Ha nem találja, nézze meg a Spam mappát is.`
-                    : `Sajnos most nem sikerült e-mailt küldeni, de kollégánk hamarosan keresi Önt. 📞 +36 20 399 0093`,
-                chips: [],
+                answer: [
+                    `**Köszönjük, rögzítettük a kérését.**`,
+                    `• Felmérés: **${booking.dayLabel}, ${WINDOW_LABELS[booking.window].toLowerCase()}**`,
+                    `• Kollégánk ezen a számon **visszaigazolja**: ${sel.phone}`,
+                    ``,
+                    `Ha közben változik valami, hívjon: **${PHONE}**`,
+                ].join("\n"),
             });
         }
 
-        const progressTotal = PROGRESS_FIELDS.length;
+        // --- ACTION: customer asked us to e-mail them the quote ----------------
+        if (action === "email_customer") {
+            const sel = cleanLeadSel(lead);
+            if (!EMAIL_OFFER_ENABLED || !sel || !EMAIL_RE.test(sel.email || "")) {
+                return response.status(400).json({ error: "bad request" });
+            }
+            const ok = await sendCustomerEmail(sel, buildQuote(sel));
+            return response.status(200).json({
+                answer: ok
+                    ? `Elküldtük az ajánlatot a megadott címre (**${sel.email}**). Ha nem találja, nézze meg a Spam mappát is.`
+                    : `Sajnos most nem sikerült e-mailt küldeni, de kollégánk hamarosan keresi. Telefon: **${PHONE}**`,
+            });
+        }
 
-        // --- STATE, assembled BEFORE the model is called -------------------
-        // The widget carries the accumulated state back to us each turn, so we
-        // can work out what the customer just answered without the model's
-        // help. (history DATA blocks are merged as a harmless fallback.)
+        // --- STATE, assembled BEFORE the model is called -----------------------
         const priorSel = Array.isArray(history)
             ? history
                 .filter((m) => m && (m.role === "assistant" || m.role === "model"))
-                .map((m) => extractData(m.content))
+                .map((m) => sanitizeChoices(extractData(m.content)))
             : [];
-        const baseSel = mergeState(state, ...priorSel);
+        const baseSel = sanitizeChoices(mergeState(...priorSel, state));
 
-        // Deterministically record the answer the customer just gave into the
-        // field they were being asked — so the chips advance immediately and
-        // don't lag a step behind the model's (one-turn-late) state block.
+        // Record the answer the customer just gave into the field they were asked.
         const determined = {};
         const pending = pendingField(baseSel);
         if (pending) {
             const v = mapAnswer(pending, question);
             if (v) determined[pending] = v;
         }
-
-        // FAST PATH: everything needed is already known (the contact form fills
-        // the last four fields in one go). There is nothing left for the model
-        // to ask, so skip the API call entirely — it saves a round-trip the
-        // customer would otherwise wait through, and a request we'd pay for.
         const earlySel = mergeState(baseSel, determined);
-        if (isQuoteReady(earlySel)) {
-            return await finishWithQuote(earlySel, response, progressTotal);
+
+        // FAST PATH 1: everything is known (the contact form completed it).
+        if (isQuoteReady(earlySel)) return await finishWithQuote(earlySel, response, photos);
+
+        // FAST PATH 2: we understood the answer — ask the next question from
+        // the template. No model call: the reply is instant and costs nothing.
+        if (pending && determined[pending]) {
+            const next = pendingField(earlySel);
+            const ack = ACKS[PROGRESS_FIELDS.filter((f) => filled(earlySel, f)).length % ACKS.length];
+            const body = questionText(next, earlySel);
+            if (body) {
+                const answer = next === "name" ? body : `${ack}\n\n${body}`;
+                return response.status(200).json({ answer, ...askPayload(next, earlySel) });
+            }
         }
 
-        // Normalized message list: [{ role: "system"|"user"|"assistant", content }]
-        // The widget sends history as [{ role: "user"|"assistant", content }].
+        // SLOW PATH: free-typed text we can't map — let the model handle it.
         const messages = [{ role: "system", content: SYSTEM_PROMPT }];
         if (Array.isArray(history) && history.length > 0) {
-            for (const m of history) {
+            for (const m of history.slice(-30)) {
                 if (m && m.role && typeof m.content === "string") {
-                    messages.push({ role: m.role === "model" ? "assistant" : m.role, content: m.content });
+                    messages.push({ role: m.role === "model" ? "assistant" : (m.role === "assistant" ? "assistant" : "user"), content: m.content.slice(0, 4000) });
                 }
             }
         } else if (question) {
-            messages.push({ role: "user", content: question });
+            messages.push({ role: "user", content: String(question).slice(0, 4000) });
+        }
+        // Tell the model where we are, so it re-asks the right question.
+        if (pending) {
+            messages.push({ role: "system", content: `A soron következő mező: ${pending}. Az eddig ismert adatok: ${JSON.stringify(baseSel)}` });
         }
 
-        // Provider is switchable via .env (AI_PROVIDER=openai | gemini).
-        // Gemini has a free tier — handy for testing without billing.
         const provider = (process.env.AI_PROVIDER || "openai").toLowerCase();
-        const result = provider === "gemini"
-            ? await callGemini(messages)
-            : await callOpenAI(messages);
+        const result = provider === "gemini" ? await callGemini(messages) : await callOpenAI(messages);
 
         if (!result.ok) {
             console.error(`[${provider}] API Error:`, result.error);
-            return response.status(200).json({ answer: "Elnézést, most nem érem el az asszisztenst. Kérlek próbáld újra." });
+            // Don't strand the customer: repeat the current question with its buttons.
+            const body = pending && questionText(pending, baseSel);
+            if (body) {
+                return response.status(200).json({
+                    answer: `Elnézést, ezt most nem tudtam feldolgozni. Kérem, válasszon az alábbiak közül, vagy hívjon: **${PHONE}**\n\n${body}`,
+                    ...askPayload(pending, baseSel),
+                });
+            }
+            return response.status(200).json({ answer: `Elnézést, most nem érem el az asszisztenst. Kérem, próbálja újra, vagy hívjon: **${PHONE}**` });
         }
 
-        let aiAnswer = result.text;
-        if (!aiAnswer) {
-            return response.status(200).json({ answer: "Értem, de ezt nem sikerült feldolgoznom. Megfogalmaznád másképp?" });
-        }
-
-        // --- STATE: extract the running DATA block from THIS message ... ---
+        let aiAnswer = result.text || "";
         let currentSel = null;
         const dataMatch = aiAnswer.match(/<!--DATA:(.*?)-->/s);
         if (dataMatch) {
             try { currentSel = sanitizeChoices(JSON.parse(dataMatch[1])); }
             catch (e) { console.error("DATA parse fail:", e.message); }
-            aiAnswer = aiAnswer.replace(/<!--DATA:.*?-->/s, "").trim();
         }
+        aiAnswer = aiAnswer.replace(/<!--DATA:.*?-->/gs, "").replace(/<!--CHIPS:.*?-->/gs, "").trim();
 
-        // Final state, by ascending trust: the model's own block (currentSel)
-        // is LEAST trusted — it can hallucinate or drop fields — so it only
-        // fills genuine gaps. The accumulated state (baseSel) overrides it, and
-        // this turn's deterministically-mapped answer (determined) wins outright.
-        // This stops a bad model turn from rewriting answers the customer
-        // actually gave.
+        // The model is least trusted; the carried state and this turn's mapped
+        // answer win. Photos can only be set by the photo step, never the model.
+        if (currentSel) {
+            delete currentSel.photos;
+            if (pending === "photos" && /kihagy|nem kér|nem kell|nincs fot/i.test(String(question))) currentSel.photos = "0";
+        }
         const sel = mergeState(currentSel, baseSel, determined);
 
-        // Progress for the widget's progress bar: how many of the PROJECT
-        // questions are answered (contact details are not counted, so the bar
-        // reaches 100% just before we ask for them).
-        const progress = PROGRESS_FIELDS.filter(
-            (f) => sel[f] != null && String(sel[f]).trim() !== ""
-        ).length;
+        if (isQuoteReady(sel)) return await finishWithQuote(sel, response, photos);
 
-        // --- COMPLETION CHECK (backend-decided, model-independent) ---
-        if (isQuoteReady(sel)) {
-            return await finishWithQuote(sel, response, progressTotal);
-        }
-
-        // Strip any chips marker the model may still emit (we compute chips ourselves).
-        aiAnswer = aiAnswer.replace(/<!--CHIPS:.*?-->/s, "").trim();
-
-        // --- QUICK-REPLY CHIPS (backend-decided, reliable) ---
-        const chips = nextChips(sel);
-
-        // The project questions are done and the contact details are next. Tell
-        // the widget to render all four as a single form rather than making the
-        // customer answer four separate questions.
-        const contactForm = pendingField(sel) === "name";
-
-        return response.status(200).json({ answer: aiAnswer, chips, contactForm, state: sel, progress, progressTotal });
+        const next = pendingField(sel);
+        return response.status(200).json({ answer: aiAnswer, ...askPayload(next, sel) });
 
     } catch (error) {
         console.error("Function Crash:", error.message);
-        return response.status(500).json({ answer: "Elnézést, a szerver épp akadozik. Kérlek próbáld újra kicsit később." });
+        return response.status(500).json({ answer: `Elnézést, a szerver épp akadozik. Kérem, próbálja újra, vagy hívjon: ${PHONE}` });
     }
 }
 
 // ---------------------------------------------------------------------------
-//  E-mail (Resend). opts = { to, toCustomer }. Returns true on success.
-//  - owner mail: full client details + quote
-//  - customer mail: friendly "your quote" version
+//  E-mail (Resend)
 // ---------------------------------------------------------------------------
-async function sendQuoteEmail(sel, quote, opts = {}) {
+const WINDOW_LABELS = { delelott: "Délelőtt (8–12)", delutan: "Délután (12–17)", barmikor: "Bármikor" };
+const AREA_LABELS = { budapest: "Budapest", agglo: "Agglomeráció", outside: "Területen kívül lehet", unknown: "Ismeretlen" };
+
+async function sendEmail({ to, subject, html, text, replyTo, attachments }) {
     const resendKey = process.env.RESEND_API_KEY;
-    const toEmail = opts.to || process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com";
     const fromEmail = process.env.LEAD_EMAIL_FROM || "Aqua System <onboarding@resend.dev>";
-    const toCustomer = !!opts.toCustomer;
-
     if (!resendKey) {
-        console.log("⚠️  Nincs RESEND_API_KEY — az e-mail kimarad. A lead a fenti logban szerepel.");
+        console.log("Nincs RESEND_API_KEY — az e-mail kimarad. A lead a fenti logban szerepel.");
         return false;
     }
-    if (!toEmail) {
-        console.log("⚠️  Nincs címzett e-mail cím — kihagyva.");
+    try {
+        const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
+            body: JSON.stringify({
+                from: fromEmail, to: [to], subject, html, text,
+                ...(replyTo ? { reply_to: replyTo } : {}),
+                ...(attachments && attachments.length ? { attachments } : {}),
+            }),
+        });
+        const result = await res.json();
+        if (res.ok) { console.log("E-mail elküldve:", subject, result.id); return true; }
+        console.error("Resend hiba:", JSON.stringify(result));
+        return false;
+    } catch (err) {
+        console.error("Nem sikerült elküldeni az e-mailt:", err.message);
         return false;
     }
+}
 
-    const itemRows = quote.items
-        .map(i => `<tr><td style="padding:6px 12px;border-bottom:1px solid #eee">${i.label}</td><td style="padding:6px 12px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">${formatHuf(i.huf)}</td></tr>`)
+const ownerTo = () => process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com";
+const telHref = (phone) => "tel:" + String(phone || "").replace(/[^\d+]/g, "");
+
+function quoteTableHtml(quote) {
+    const rows = quote.items
+        .map(i => `<tr><td style="padding:6px 12px;border-bottom:1px solid #eee">${esc(i.label)}</td><td style="padding:6px 12px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">${formatHuf(i.huf)}</td></tr>`)
         .join("");
+    return `<table style="width:100%;border-collapse:collapse;font-size:14px">${rows}
+      <tr><td style="padding:10px 12px;font-weight:bold">Induló ár</td><td style="padding:10px 12px;text-align:right;font-weight:bold;color:#0f2a5e">${formatHuf(quote.total)}-tól</td></tr>
+    </table>`;
+}
 
-    const installTypeLabel = quote.isReplacement ? "Meglévő kazán cseréje" : "Új rendszer kiépítése";
+function surchargesHtml(sel) {
+    return `<ul style="margin:6px 0 0;padding-left:18px;font-size:13px;color:#374151">${surchargeLines(sel)
+        .map(l => `<li>${esc(l.replace(/\*\*/g, ""))}</li>`).join("")}</ul>`;
+}
 
-    // Client-details block is only included in the owner's copy.
-    const clientBlock = toCustomer ? "" : `
-        <h3 style="margin:0 0 8px">Ügyfél adatai</h3>
-        <p style="margin:4px 0"><b>Név:</b> ${sel.name || "-"}</p>
-        <p style="margin:4px 0"><b>Telefon:</b> ${sel.phone || "-"}</p>
-        <p style="margin:4px 0"><b>E-mail:</b> ${sel.email || "-"}</p>
-        <p style="margin:4px 0"><b>Irányítószám:</b> ${sel.postal_code || "-"}</p>
-        <p style="margin:4px 0"><b>Lakók száma:</b> ${lbl("occupants", sel.occupants)}</p>
-        <p style="margin:4px 0"><b>Kért garancia:</b> ${lbl("warranty", sel.warranty)}</p>
-        <p style="margin:4px 0"><b>Tervezett keret:</b> ${lbl("budget", sel.budget)}</p>
-        <p style="margin:4px 0"><b>Tervezett kivitelezés:</b> ${lbl("timeline", sel.timeline)}</p>
-        <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">`;
+function leadDetailsHtml(sel, area) {
+    const row = (k, v) => `<tr><td style="padding:3px 12px 3px 0;color:#6b7280">${k}</td><td style="padding:3px 0"><b>${esc(v)}</b></td></tr>`;
+    return `<table style="font-size:14px;border-collapse:collapse">
+      ${row("Név", sel.name || "-")}
+      ${row("Telefon", sel.phone || "-")}
+      ${row("E-mail", sel.email || "nem adta meg")}
+      ${row("Irányítószám", `${sel.postal_code || "-"} (${AREA_LABELS[area] || area})`)}
+      ${row("Tervezett csere", lbl("timeline", sel.timeline))}
+      ${row("Leszerelendő", lbl("old_boiler", sel.old_boiler))}
+      ${row("Lakók", lbl("occupants", sel.occupants))}
+      ${row("Új kazán", lbl("new_boiler", sel.new_boiler))}
+      ${row("Kémény", lbl("flue", sel.flue))}
+      ${row("Garancia", lbl("warranty", sel.warranty))}
+      ${row("Fotók", photosLabel(sel))}
+    </table>`;
+}
 
-    const heading = toCustomer ? "Az Ön árajánlata — Aqua System" : "Új árajánlat — Aqua System";
-    const intro = toCustomer
-        ? `<p style="margin:0 0 12px">Kedves ${sel.name || "Ügyfelünk"}! Köszönjük érdeklődését. Íme az előzetes árajánlata:</p>`
-        : "";
+// Owner notification. The callback button and the urgency/area flags sit at
+// the very top, because the owner reads this on a phone between jobs.
+async function sendOwnerEmail(sel, quote, { area, attachments }) {
+    const urgent = sel.timeline === "t_asap";
+    const flags = [];
+    if (urgent) flags.push(`<div style="background:#fef3c7;border:1px solid #f59e0b;color:#92400e;padding:8px 12px;border-radius:6px;margin-bottom:8px"><b>Sürgős:</b> amint lehet szeretné a cserét.</div>`);
+    if (area === "outside") flags.push(`<div style="background:#fee2e2;border:1px solid #ef4444;color:#991b1b;padding:8px 12px;border-radius:6px;margin-bottom:8px"><b>Terület:</b> a(z) ${esc(sel.postal_code)} irányítószám nincs a Budapest + agglomeráció listán.</div>`);
 
-    // Owner notifications stay plain/transactional-looking (no colored banner) —
-    // a marketing-style template with a bold color header is what commonly gets
-    // Gmail's Promotions-tab classifier to flag it, dropping it out of the inbox.
-    const html = toCustomer ? `
+    const html = `
     <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#111827">
-      <div style="background:#2b5fd0;color:#ffffff;padding:20px 24px;border-radius:12px 12px 0 0">
-        <h2 style="margin:0">${heading}</h2>
-      </div>
-      <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 12px 12px">
-        ${intro}${clientBlock}
-        <h3 style="margin:0 0 8px">Munka jellege</h3>
-        <p style="margin:4px 0"><b>Típus:</b> ${installTypeLabel}</p>
+      <h2 style="margin:0 0 12px;font-size:18px">Új árajánlat-kérés: ${esc(sel.name || "")}</h2>
+      ${flags.join("")}
+      <p style="margin:0 0 16px"><a href="${esc(telHref(sel.phone))}" style="display:inline-block;background:#2b5fd0;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Hívás: ${esc(sel.phone || "")}</a></p>
+      <div style="border:1px solid #e5e7eb;padding:20px;border-radius:8px">
+        ${leadDetailsHtml(sel, area)}
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
-        <h3 style="margin:0 0 8px">Kalkulált árajánlat</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:14px">${itemRows}
-          <tr><td style="padding:10px 12px;font-weight:bold">Becsült végösszeg</td><td style="padding:10px 12px;text-align:right;font-weight:bold;color:#0f2a5e">${formatHuf(quote.total)}</td></tr>
-        </table>
-        <p style="margin:16px 0 0;font-size:12px;color:#6b7280">Előzetes, tájékoztató jellegű kalkuláció, bruttó (ÁFÁ-val). Az ár tartalmazza a kazánt és a teljes beépítést; a pontos márka/típus a helyszíni felmérés után véglegesül. 📞 +36 20 399 0093</p>
-      </div>
-    </div>` : `
-    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#111827">
-      <h2 style="margin:0 0 16px;font-size:18px">${heading}</h2>
-      <div style="border:1px solid #e5e7eb;padding:24px;border-radius:8px">
-        ${intro}${clientBlock}
-        <h3 style="margin:0 0 8px">Munka jellege</h3>
-        <p style="margin:4px 0"><b>Típus:</b> ${installTypeLabel}</p>
-        <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
-        <h3 style="margin:0 0 8px">Kalkulált árajánlat</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:14px">${itemRows}
-          <tr><td style="padding:10px 12px;font-weight:bold">Becsült végösszeg</td><td style="padding:10px 12px;text-align:right;font-weight:bold;color:#0f2a5e">${formatHuf(quote.total)}</td></tr>
-        </table>
-        <p style="margin:16px 0 0;font-size:12px;color:#6b7280">Előzetes, tájékoztató jellegű kalkuláció, bruttó (ÁFÁ-val). Az ár tartalmazza a kazánt és a teljes beépítést; a pontos márka/típus a helyszíni felmérés után véglegesül.${toCustomer ? " 📞 +36 20 399 0093" : ""}</p>
+        <h3 style="margin:0 0 8px">Amit az ügyfél látott</h3>
+        ${quoteTableHtml(quote)}
+        <p style="margin:12px 0 0;font-size:13px"><b>Felárak, amiket előre jeleztünk:</b></p>
+        ${surchargesHtml(sel)}
+        ${attachments.length ? `<p style="margin:16px 0 0;font-size:13px">${attachments.length} fotó csatolva ehhez a levélhez.</p>` : ""}
+        <p style="margin:16px 0 0;font-size:12px;color:#6b7280">Ha az ügyfél a chatben felmérési időpontot is választ, arról külön levél érkezik.</p>
       </div>
     </div>`;
 
-    // No brackets/ALL-CAPS in the subject — that pattern is a common trigger for
-    // Gmail's Promotions-tab / spam classifier on transactional owner mail.
-    const subject = toCustomer
-        ? `Az Ön árajánlata — Aqua System — ${formatHuf(quote.total)}`
-        : `Új árajánlat — ${sel.name || ""} (${sel.postal_code || ""}) — ${formatHuf(quote.total)}`;
+    const text = [
+        urgent ? "SÜRGŐS: amint lehet szeretné a cserét." : "",
+        area === "outside" ? `TERÜLET: ${sel.postal_code} nincs a Budapest + agglomeráció listán.` : "",
+        `Név: ${sel.name || "-"}`,
+        `Telefon: ${sel.phone || "-"}`,
+        `E-mail: ${sel.email || "nem adta meg"}`,
+        `Irányítószám: ${sel.postal_code || "-"} (${AREA_LABELS[area] || area})`,
+        `Tervezett csere: ${lbl("timeline", sel.timeline)}`,
+        `Leszerelendő: ${lbl("old_boiler", sel.old_boiler)}`,
+        `Lakók: ${lbl("occupants", sel.occupants)}`,
+        `Új kazán: ${lbl("new_boiler", sel.new_boiler)}`,
+        `Kémény: ${lbl("flue", sel.flue)}`,
+        `Fotók: ${photosLabel(sel)}`,
+        "",
+        ...quote.items.map(i => `- ${i.label}: ${formatHuf(i.huf)}`),
+        "",
+        `Induló ár: ${formatHuf(quote.total)}-tól`,
+    ].filter((l, i) => l !== "" || i > 1).join("\n");
 
-    // Plain-text fallback alongside the HTML — multipart mail is a deliverability
-    // best practice and HTML-only messages are more likely to get flagged.
-    const itemLines = quote.items.map(i => `- ${i.label}: ${formatHuf(i.huf)}`).join("\n");
-    const text = toCustomer
-        ? [
-            `Kedves ${sel.name || "Ügyfelünk"}!`,
-            "",
-            "Köszönjük érdeklődését. Íme az előzetes árajánlata:",
-            "",
-            itemLines,
-            "",
-            `Becsült végösszeg: ${formatHuf(quote.total)}`,
-            "",
-            "Előzetes, tájékoztató jellegű kalkuláció, bruttó (ÁFÁ-val). Az ár tartalmazza a kazánt és a teljes beépítést; a pontos márka/típus a helyszíni felmérés után véglegesül.",
-            "+36 20 399 0093",
-        ].join("\n")
-        : [
-            "Új árajánlat érkezett.",
-            "",
-            `Név: ${sel.name || "-"}`,
-            `Telefon: ${sel.phone || "-"}`,
-            `E-mail: ${sel.email || "-"}`,
-            `Irányítószám: ${sel.postal_code || "-"}`,
-            `Lakók száma: ${lbl("occupants", sel.occupants)}`,
-            `Kért garancia: ${lbl("warranty", sel.warranty)}`,
-            `Tervezett keret: ${lbl("budget", sel.budget)}`,
-            `Tervezett kivitelezés: ${lbl("timeline", sel.timeline)}`,
-            "",
-            itemLines,
-            "",
-            `Becsült végösszeg: ${formatHuf(quote.total)}`,
-        ].join("\n");
+    // No brackets / ALL-CAPS in the subject — those push transactional mail
+    // into Gmail's Promotions tab.
+    const subject = `${urgent ? "Sürgős: " : ""}Új árajánlat — ${sel.name || ""} (${sel.postal_code || ""}) — ${formatHuf(quote.total)}-tól`;
 
-    // Reply-To: the sending address itself has no real inbox behind it (send-only
-    // domain), so a bare "Reply" would vanish. Point owner mail at the customer's
-    // address (reply goes straight to the lead) and customer mail at the business's
-    // real inbox — never left pointing at a dead end.
-    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const replyTo = toCustomer
-        ? "keszulekcsere@aqua-system.hu"
-        : (EMAIL_RE.test(sel.email || "") ? sel.email : undefined);
+    return sendEmail({
+        to: ownerTo(), subject, html, text, attachments,
+        replyTo: EMAIL_RE.test(sel.email || "") ? sel.email : undefined,
+    });
+}
 
-    try {
-        const emailRes = await fetch("https://api.resend.com/emails", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
-            body: JSON.stringify({ from: fromEmail, to: [toEmail], subject, html, text, ...(replyTo ? { reply_to: replyTo } : {}) }),
-        });
+async function sendBookingEmail(sel, quote, booking) {
+    const area = classifyArea(sel.postal_code);
+    const when = `${booking.dayLabel}, ${WINDOW_LABELS[booking.window]}`;
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#111827">
+      <h2 style="margin:0 0 12px;font-size:18px">Felmérési időpont kérés: ${esc(sel.name || "")}</h2>
+      <div style="background:#eaf3ff;border:1px solid #2b5fd0;padding:12px 16px;border-radius:8px;margin-bottom:12px;font-size:16px">
+        <b>${esc(when)}</b><br><span style="font-size:13px;color:#374151">Az ügyfél azt várja, hogy telefonon visszaigazolják.</span>
+      </div>
+      <p style="margin:0 0 16px"><a href="${esc(telHref(sel.phone))}" style="display:inline-block;background:#2b5fd0;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Hívás: ${esc(sel.phone || "")}</a></p>
+      <div style="border:1px solid #e5e7eb;padding:20px;border-radius:8px">
+        ${leadDetailsHtml(sel, area)}
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
+        ${quoteTableHtml(quote)}
+      </div>
+    </div>`;
+    const text = [
+        `Felmérési időpont kérés: ${when}`,
+        `Név: ${sel.name}`,
+        `Telefon: ${sel.phone}`,
+        `Irányítószám: ${sel.postal_code}`,
+        `Garancia: ${lbl("warranty", sel.warranty)}`,
+        `Induló ár: ${formatHuf(quote.total)}-tól`,
+    ].join("\n");
+    return sendEmail({
+        to: ownerTo(),
+        subject: `Felmérés kérés — ${sel.name || ""} — ${when}`,
+        html, text,
+        replyTo: EMAIL_RE.test(sel.email || "") ? sel.email : undefined,
+    });
+}
 
-        const result = await emailRes.json();
-        if (emailRes.ok) {
-            console.log(`✅ Árajánlat e-mail elküldve (${toCustomer ? "ügyfél" : "tulajdonos"}):`, result.id);
-            return true;
-        }
-        console.error("❌ Resend hiba:", JSON.stringify(result));
-        return false;
-    } catch (emailErr) {
-        console.error("❌ Nem sikerült elküldeni az e-mailt:", emailErr.message);
-        return false;
-    }
+async function sendCustomerEmail(sel, quote) {
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#111827">
+      <div style="background:#2b5fd0;color:#ffffff;padding:20px 24px;border-radius:12px 12px 0 0">
+        <h2 style="margin:0">Az Ön ajánlata — Aqua System</h2>
+      </div>
+      <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 12px 12px">
+        <p style="margin:0 0 12px">Kedves ${esc(sel.name || "Ügyfelünk")}! Köszönjük érdeklődését. Íme az előzetes ajánlata:</p>
+        ${quoteTableHtml(quote)}
+        <p style="margin:14px 0 0;font-size:13px"><b>Ami ezen felül jöhet:</b></p>
+        ${surchargesHtml(sel)}
+        <p style="margin:16px 0 0;font-size:12px;color:#6b7280">Bruttó (ÁFÁ-val), a kazánnal és a teljes beépítéssel. A végleges, fix árat a helyszíni felmérés után adjuk meg. Telefon: ${PHONE}</p>
+      </div>
+    </div>`;
+    const text = [
+        `Kedves ${sel.name || "Ügyfelünk"}!`,
+        "",
+        "Köszönjük érdeklődését. Íme az előzetes ajánlata:",
+        "",
+        ...quote.items.map(i => `- ${i.label}: ${formatHuf(i.huf)}`),
+        "",
+        `Induló ár: ${formatHuf(quote.total)}-tól`,
+        "",
+        "Ami ezen felül jöhet:",
+        ...surchargeLines(sel).map(l => "- " + l.replace(/\*\*/g, "")),
+        "",
+        `A végleges, fix árat a helyszíni felmérés után adjuk meg. Telefon: ${PHONE}`,
+    ].join("\n");
+    return sendEmail({
+        to: sel.email,
+        subject: `Az Ön ajánlata — Aqua System — ${formatHuf(quote.total)}-tól`,
+        html, text, replyTo: COMPANY_EMAIL,
+    });
 }
 
 // ---------------------------------------------------------------------------
-//  Google Sheet logging. POSTs the lead to a Google Apps Script web app, which
-//  appends one row to the spreadsheet. Set SHEETS_WEBHOOK_URL in .env to the
-//  deployed Apps Script URL (see README). No-ops (returns false) if unset, so
-//  the quote flow keeps working without it. The `row` array order MUST match
-//  the header row in the Apps Script / sheet.
+//  Google Sheet logging (optional, SHEETS_WEBHOOK_URL). The first 14 columns
+//  keep their original order so an existing sheet does not shift; questions
+//  that are no longer asked are written as "nem kérdezett", and the new data
+//  is appended at the end.
 // ---------------------------------------------------------------------------
-async function sendLeadToSheet(sel, quote) {
+async function sendLeadToSheet(sel, quote, area) {
     const url = process.env.SHEETS_WEBHOOK_URL;
     if (!url) {
-        console.log("ℹ️  Nincs SHEETS_WEBHOOK_URL — a lead nem kerül Google Sheetbe (csak e-mail).");
+        console.log("Nincs SHEETS_WEBHOOK_URL — a lead nem kerül Google Sheetbe (csak e-mail).");
         return false;
     }
-
-    // One row per lead. Keep this order in sync with the sheet's header row.
     const row = [
         new Date().toISOString(),               // Időbélyeg
         sel.name || "",                         // Név
         sel.phone || "",                        // Telefon
         sel.email || "",                        // E-mail
         sel.postal_code || "",                  // Irányítószám
-        lbl("budget", sel.budget),              // Tervezett keret
+        "nem kérdezett",                        // Tervezett keret
         lbl("timeline", sel.timeline),          // Tervezett kivitelezés
         lbl("old_boiler", sel.old_boiler),      // Leszerelendő készülék
         lbl("occupants", sel.occupants),        // Lakók száma
         lbl("new_boiler", sel.new_boiler),      // Új kazán
         lbl("flue", sel.flue),                  // Kémény
-        lbl("rcd", sel.rcd),                    // Életvédelmi relé
-        lbl("warranty", sel.warranty),          // Kért garancia
-        quote.total,                            // Becsült végösszeg (Ft)
+        "nem kérdezett",                        // Életvédelmi relé
+        lbl("warranty", sel.warranty),          // Garancia (az ajánlat pillanatában)
+        quote.total,                            // Induló ár (Ft)
+        Number(sel.photos || 0),                // Fotók száma
+        AREA_LABELS[area] || area,              // Terület
     ];
-
     try {
         const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ row }),
         });
-        if (res.ok) {
-            console.log("✅ Lead beírva a Google Sheetbe.");
-            return true;
-        }
-        console.error("❌ Google Sheet hiba:", res.status, await res.text());
+        if (res.ok) { console.log("Lead beírva a Google Sheetbe."); return true; }
+        console.error("Google Sheet hiba:", res.status, await res.text());
         return false;
     } catch (err) {
-        console.error("❌ Nem sikerült a Google Sheetbe írni:", err.message);
+        console.error("Nem sikerült a Google Sheetbe írni:", err.message);
         return false;
     }
 }
+
+// Exposed for the local test script.
+export const _test = { buildQuote, mapAnswer, classifyArea, surchargeLines, pendingField, isQuoteReady, cleanPhotos };

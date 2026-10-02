@@ -11,13 +11,22 @@ const __dirname = path.dirname(__filename);
 try {
     const envFile = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
     envFile.split('\n').forEach(line => {
-        const [key, value] = line.split('=');
-        if (key && value) {
-            process.env[key.trim()] = value.trim();
-        }
+        const i = line.indexOf('=');
+        if (i < 1) return;
+        const key = line.slice(0, i).trim();
+        const value = line.slice(i + 1).trim();
+        if (key && value) process.env[key] = value;
     });
 } catch (error) {
     console.log('No .env file found or error reading it');
+}
+
+// `node server.js --dry-run`: test the whole flow locally without e-mailing
+// the owner or writing test leads into the real Google Sheet.
+const DRY_RUN = process.argv.includes('--dry-run');
+if (DRY_RUN) {
+    delete process.env.RESEND_API_KEY;
+    delete process.env.SHEETS_WEBHOOK_URL;
 }
 
 const PORT = Number(process.env.PORT) || 8891;
@@ -52,7 +61,10 @@ const server = http.createServer(async (req, res) => {
 
 
     // Handle API endpoint
-    if (req.url === '/api/faq-agent' && req.method === 'POST') {
+    // Ignore ?query / #hash (e.g. the ?ajanlat deep link), like Vercel does.
+    const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+
+    if (pathname === '/api/faq-agent' && req.method === 'POST') {
         let body = '';
 
         req.on('data', chunk => {
@@ -89,7 +101,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Serve static files from public directory
-    let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url);
+    let filePath = path.join(__dirname, 'public', pathname === '/' ? 'index.html' : pathname);
     const extname = String(path.extname(filePath)).toLowerCase();
     const contentType = mimeTypes[extname] || 'application/octet-stream';
 
@@ -110,6 +122,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`\n🚀 Server running at http://localhost:${PORT}/`);
-    console.log(`📱 Chatbot demo ready for your client!\n`);
+    console.log(`\nServer running at http://localhost:${PORT}/`);
+    if (DRY_RUN) console.log(`Dry run: no e-mails are sent and nothing is written to the Sheet.`);
+    console.log(``);
 });

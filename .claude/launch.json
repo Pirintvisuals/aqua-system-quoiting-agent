@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["server.js"],
       "port": 8891
+    },
+    {
+      "name": "aqua-widget-dry",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server.js", "--dry-run"],
+      "port": 8891
     }
   ]
 }
