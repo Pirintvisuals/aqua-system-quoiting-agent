@@ -924,9 +924,11 @@ export default async function handler(request, response) {
 const WINDOW_LABELS = { delelott: "Délelőtt (8–12)", delutan: "Délután (12–17)", barmikor: "Bármikor" };
 const AREA_LABELS = { budapest: "Budapest", agglo: "Agglomeráció", outside: "Területen kívül lehet", unknown: "Ismeretlen" };
 
+const leadFrom = () => process.env.LEAD_EMAIL_FROM || "Aqua System <onboarding@resend.dev>";
+
 async function sendEmail({ to, subject, html, text, replyTo, attachments }) {
     const resendKey = process.env.RESEND_API_KEY;
-    const fromEmail = process.env.LEAD_EMAIL_FROM || "Aqua System <onboarding@resend.dev>";
+    const fromEmail = leadFrom();
     if (!resendKey) {
         console.log("Nincs RESEND_API_KEY — az e-mail kimarad. A lead a fenti logban szerepel.");
         return false;
@@ -936,7 +938,7 @@ async function sendEmail({ to, subject, html, text, replyTo, attachments }) {
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
             body: JSON.stringify({
-                from: fromEmail, to: [to], subject, html, text,
+                from: fromEmail, to: Array.isArray(to) ? to : [to], subject, html, text,
                 ...(replyTo ? { reply_to: replyTo } : {}),
                 ...(attachments && attachments.length ? { attachments } : {}),
             }),
@@ -951,7 +953,22 @@ async function sendEmail({ to, subject, html, text, replyTo, attachments }) {
     }
 }
 
-const ownerTo = () => process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com";
+// Where new leads and survey requests go: Aqua System's own inbox. A copy also
+// goes to LEAD_EMAIL_TO (Milán) while that variable is set.
+//
+// Resend's test sender (onboarding@resend.dev) only delivers to the Resend
+// account's own address, and rejects the WHOLE e-mail if any other recipient
+// is on it. So until LEAD_EMAIL_FROM is an address on a verified domain, leads
+// go to LEAD_EMAIL_TO only — they keep arriving instead of all bouncing. Once
+// the domain is verified and LEAD_EMAIL_FROM is changed, the client's inbox is
+// added automatically, with no code change.
+const OWNER_EMAIL = "kazancsere@aqua-system.hu";
+const usingTestSender = () => /onboarding@resend\.dev/i.test(leadFrom());
+const ownerTo = () => {
+    const copy = process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com";
+    if (usingTestSender()) return [copy];
+    return [...new Set([OWNER_EMAIL, process.env.LEAD_EMAIL_TO].filter(Boolean))];
+};
 const telHref = (phone) => "tel:" + String(phone || "").replace(/[^\d+]/g, "");
 
 function quoteTableHtml(quote) {
