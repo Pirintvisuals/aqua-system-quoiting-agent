@@ -25,8 +25,8 @@ const PRICES = {
         nem_tudom:    { huf: 0,     label: "Leszerelendő készülék: a felmérésnél pontosítjuk" },
     },
     // CSAK akkor kerül a tételek közé, ha a régi készülék HAGYOMÁNYOS volt.
-    // ÁRAT ELLENŐRIZNI: irányár, írd át az Aqua System saját árára.
-    chimney_conversion: { huf: 260000, label: "Kéményátalakítás kondenzációs kazánhoz (saválló béléscső)" },
+    // Ár: Ferenc, 2026-11 (kb. 600 eFt).
+    chimney_conversion: { huf: 600000, label: "Kéményátalakítás kondenzációs kazánhoz (saválló béléscső)" },
 
     // Új kazán — KIZÁRÓLAG kondenzációs. "nem_tudom" => a legolcsóbb (kombi).
     new_boiler: {
@@ -52,10 +52,10 @@ const PRICES = {
     // Garancia (Ferenc 6. kérdése). Ferenc, 2026-11: a garanciát törvény
     // szabályozza — 3 év magánszemélynek (cégnek 1 év). 10 év is lehet, de az
     // MÁSIK készüléket jelent, nem kiterjesztést. Köztes lehetőség nincs.
-    // ÁRAT ELLENŐRIZNI: a 10 éves garanciájú készülék felára irányár.
+    // A 10 év garanciás készülék kb. 1,5 MFt-tal drágább (Ferenc, 2026-11).
     warranty: {
         w_3:       { huf: 0,      label: "Garancia: 3 év (törvényi garancia)" },
-        w_10:      { huf: 150000, label: "10 év garanciás készülék (felár)" },
+        w_10:      { huf: 1500000, label: "10 év garanciás készülék (felár)" },
         nem_tudom: { huf: 0,      label: "Garancia: 3 év (törvényi garancia — a felmérésnél pontosítjuk)" },
     },
     // Mindig felszámolt standard tételek
