@@ -42,19 +42,21 @@ const PRICES = {
         gyujtokemeny: { huf: 600000, label: "Társasházi gyűjtőkémény bekötés" },
         nem_tudom:    { huf: 380000, label: "Kéménykivezetés a tetőn keresztül (alap — a felmérésnél pontosítjuk)" },
     },
-    // Életvédelmi (Fi) relé. A laikus ügyfél ezt nem tudja megválaszolni, ezért
-    // NEM kérdezzük: az induló ár a "van" esettel számol, a különbözet a
-    // "nincs benne" listán szerepel.
+    // Életvédelmi (Fi) relé. "nem_tudom" => a legolcsóbb (van, 50 000), a
+    // különbözet a "jöhet még" listán szerepel.
     rcd: {
-        van:   { huf: 50000,  label: "Életvédelmi (Fi) relé ellenőrzése és bekötése" },
-        nincs: { huf: 100000, label: "Életvédelmi (Fi) relé kiépítése" },
+        van:       { huf: 50000,  label: "Életvédelmi (Fi) relé: van" },
+        nincs:     { huf: 100000, label: "Életvédelmi (Fi) relé: nincs — kiépítés szükséges" },
+        nem_tudom: { huf: 50000,  label: "Életvédelmi (Fi) relé (alap — a felmérésnél pontosítjuk)" },
     },
-    // Garancia — nem kérdés, hanem választható a kész ajánlaton.
-    // ÁRAT ELLENŐRIZNI: irányárak, írd át az Aqua System saját áraira.
+    // Hány év garanciát kér az ügyfél (Ferenc 6. kérdése). A kész ajánlaton
+    // még módosítható. ÁRAT ELLENŐRIZNI: irányárak, írd át az Aqua System
+    // saját áraira.
     warranty: {
-        w_2:  { huf: 0,      label: "Garancia: 2 év (gyári alapgarancia)" },
-        w_5:  { huf: 60000,  label: "Kiterjesztett garancia: 5 év" },
-        w_10: { huf: 150000, label: "Kiterjesztett garancia: 10 év" },
+        w_2:       { huf: 0,      label: "Garancia: 2 év (gyári alapgarancia)" },
+        w_5:       { huf: 60000,  label: "Kiterjesztett garancia: 5 év" },
+        w_10:      { huf: 150000, label: "Kiterjesztett garancia: 10 év" },
+        nem_tudom: { huf: 0,      label: "Garancia: 2 év (alap — a felmérésnél pontosítjuk)" },
     },
     // Mindig felszámolt standard tételek
     standard: {
@@ -129,8 +131,8 @@ function buildQuote(sel) {
     add(PRICES.new_boiler[sel.new_boiler] || PRICES.new_boiler.nem_tudom, "keszulek");
     add(PRICES.flue[sel.flue] || PRICES.flue.nem_tudom, "kemeny");
     if (sel.old_boiler === "hagyomanyos") add(PRICES.chimney_conversion, "kemeny");
-    add(PRICES.rcd.van, "szereles");
-    add(PRICES.warranty[sel.warranty] || PRICES.warranty.w_2, "garancia");
+    add(PRICES.rcd[sel.rcd] || PRICES.rcd.nem_tudom, "szereles");
+    add(PRICES.warranty[sel.warranty] || PRICES.warranty.nem_tudom, "garancia");
 
     add(PRICES.standard.wet_system, "szereles");
     add(PRICES.standard.commissioning, "szereles");
@@ -158,14 +160,34 @@ function surchargeLines(sel) {
         const d = PRICES.flue.tegla_kemeny.huf - PRICES.flue.teto.huf;
         out.push(`Ha kéménybe kell kötni a tetőn át helyett: **+${formatHuf(d)}**`);
     }
-    out.push(`Ha nincs életvédelmi (Fi) relé, a kiépítése: **+${formatHuf(PRICES.rcd.nincs.huf - PRICES.rcd.van.huf)}**`);
+    if (sel.rcd === "nem_tudom") {
+        out.push(`Ha nincs életvédelmi (Fi) relé, a kiépítése: **+${formatHuf(PRICES.rcd.nincs.huf - PRICES.rcd.van.huf)}**`);
+    }
     return out;
 }
 
+// ---------------------------------------------------------------------------
+//  THE QUESTIONS ARE FERENC'S. The eight project questions, their order and
+//  their wording were written by the client (Ferenc). Do not add, drop,
+//  reorder or reword them without his OK.
+//
+//  PHOTO_STEP: an optional "fotózza le a kazánt" step after question 8. It is
+//  NOT one of Ferenc's questions, so it is off. Flip to true only if he asks.
+// ---------------------------------------------------------------------------
+const PHOTO_STEP = false;
+
+const PROJECT_FIELDS = ["old_boiler", "occupants", "new_boiler", "flue", "rcd", "warranty",
+    "budget", "timeline", ...(PHOTO_STEP ? ["photos"] : [])];
+const CONTACT_FIELDS = ["name", "email", "phone", "postal_code"];
+
+// Order the questions are asked in; the contact details come last, as one form.
+const FIELD_ORDER = [...PROJECT_FIELDS, ...CONTACT_FIELDS];
+
+// The steps that count toward the progress bar.
+const PROGRESS_FIELDS = PROJECT_FIELDS;
+
 // Backend decides when the quote is complete — independent of the AI model.
-// E-mail is optional: the owner calls, so the phone number is what matters.
-const REQUIRED = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline",
-    "name", "phone", "postal_code"];
+const REQUIRED = FIELD_ORDER;
 function isQuoteReady(s) {
     if (!s || typeof s !== "object") return false;
     return REQUIRED.every((k) => filled(s, k));
@@ -177,16 +199,11 @@ const CHIP_MAP = {
     occupants: ["1–2 fő", "3–4 fő", "5 vagy több", "Nem tudom"],
     new_boiler: ["Kombi (24 kW)", "Tárolós (46 l)", "Külső tároló (125 l)", "Nem tudom"],
     flue: ["Tetőn keresztül", "Tégla kéménybe", "Társasházi gyűjtőkémény", "Nem tudom"],
+    rcd: ["Van", "Nincs", "Nem tudom"],
+    warranty: ["2 év (alap)", "5 év", "10 év", "Nem tudom"],
+    budget: ["1 millió Ft alatt", "1–1,5 millió Ft", "1,5–2 millió Ft", "2 millió Ft felett", "Még nem tudom"],
     timeline: ["Amint lehet", "Egy hónapon belül", "Fél éven belül", "Még idén", "Még nem tudom"],
 };
-
-// Order the questions are asked in. "photos" is an optional step (upload or
-// skip); the contact details come last, as one form.
-const FIELD_ORDER = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline",
-    "name", "phone", "postal_code"];
-
-// The steps that count toward the progress bar.
-const PROGRESS_FIELDS = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline"];
 
 // Clicked chip label -> canonical value, per field (lower-cased keys).
 const CHIP_VALUES = {
@@ -194,6 +211,15 @@ const CHIP_VALUES = {
     occupants: { "1–2 fő": "o_1_2", "3–4 fő": "o_3_4", "5 vagy több": "o_5plus", "nem tudom": "nem_tudom" },
     new_boiler: { "kombi (24 kw)": "kombi_24", "tárolós (46 l)": "tarolos_46", "külső tároló (125 l)": "kulso_125", "nem tudom": "nem_tudom" },
     flue: { "tetőn keresztül": "teto", "tégla kéménybe": "tegla_kemeny", "társasházi gyűjtőkémény": "gyujtokemeny", "nem tudom": "nem_tudom" },
+    rcd: { "van": "van", "nincs": "nincs", "nem tudom": "nem_tudom" },
+    warranty: { "2 év (alap)": "w_2", "5 év": "w_5", "10 év": "w_10", "nem tudom": "nem_tudom" },
+    budget: {
+        "1 millió ft alatt": "b_1m",
+        "1–1,5 millió ft": "b_1_1_5",
+        "1,5–2 millió ft": "b_1_5_2",
+        "2 millió ft felett": "b_2m",
+        "még nem tudom": "b_unsure",
+    },
     timeline: {
         "amint lehet": "t_asap",
         "egy hónapon belül": "t_month",
@@ -226,6 +252,15 @@ const SYNONYMS = {
         [/gyűjtő|gyujto|társash|tarsash|közös|kozos/, "gyujtokemeny"],
         [/tégla|tegla|kémény|kemeny/, "tegla_kemeny"],
     ],
+    rcd: [
+        [/^(nincs|nem hiszem|nincsen)\b/, "nincs"],
+        [/^(van|igen|persze|szerintem van)\b/, "van"],
+    ],
+    warranty: [
+        [/^10\b|tíz|tiz/, "w_10"],
+        [/^5\b|^öt\b|^ot\b/, "w_5"],
+        [/^2\b|kettő|ketto|alap|ingyen/, "w_2"],
+    ],
     timeline: [
         [/azonnal|sürgős|surgos|minél|minel|asap|amint/, "t_asap"],
         [/hónap|honap|hét|het\b/, "t_month"],
@@ -242,6 +277,27 @@ function pendingField(sel) {
     return null;
 }
 
+// Parse a typed Hungarian budget amount into Ft: "1 500 000", "1,5 millió",
+// "1.5 m", "másfél millió", "900 ezer". Returns null if no amount is found.
+function parseBudgetAmount(t) {
+    if (/másf[eé]l\s*milli/.test(t)) return 1_500_000;
+    const m = t.match(/(\d+(?:[.,]\d+)?)\s*(?:milli[óo]k?|m\b|mft)/);
+    if (m) return Math.round(parseFloat(m[1].replace(",", ".")) * 1_000_000);
+    const e = t.match(/(\d+(?:[.,]\d+)?)\s*(?:ezer|e\b|k\b)/);
+    if (e) return Math.round(parseFloat(e[1].replace(",", ".")) * 1000);
+    const digits = t.replace(/[^\d]/g, "");
+    return digits ? parseInt(digits, 10) : null;
+}
+
+// Put a Ft amount into a budget band. Implausibly small numbers are rejected.
+function bucketBudget(amount) {
+    if (amount == null || isNaN(amount) || amount < 10000) return null;
+    if (amount < 1_000_000) return "b_1m";
+    if (amount < 1_500_000) return "b_1_1_5";
+    if (amount < 2_000_000) return "b_1_5_2";
+    return "b_2m";
+}
+
 // Given the field the customer is answering + their message, return the
 // canonical value, or null when it needs the model to interpret.
 function mapAnswer(field, answer) {
@@ -254,6 +310,12 @@ function mapAnswer(field, answer) {
         if (m) return m[1];
         if (/^(kihagyom|kihagy|most nem|nincs|nem)\b/.test(low)) return "0";
         return null;
+    }
+    if (field === "budget") {
+        if (CHIP_VALUES.budget[low]) return CHIP_VALUES.budget[low];
+        if (low.includes("?")) return null;
+        if (UNSURE_RE.test(low) || /^még nem tudom/.test(low)) return "b_unsure";
+        return bucketBudget(parseBudgetAmount(low));
     }
     if (CHIP_VALUES[field]) {
         if (CHIP_VALUES[field][low]) return CHIP_VALUES[field][low];
@@ -300,7 +362,15 @@ const LABELS = {
     occupants: { o_1_2: "1–2 fő", o_3_4: "3–4 fő", o_5plus: "5 vagy több", nem_tudom: "Nem tudja" },
     new_boiler: { kombi_24: "Kondenzációs kombi (24 kW)", tarolos_46: "Kondenzációs tárolós, 46 l (24 kW)", kulso_125: "Kondenzációs + külső tároló, 125 l (24 kW)", nem_tudom: "Nem tudja (alap: kombi)" },
     flue: { teto: "Tetőn keresztül", tegla_kemeny: "Tégla kéménybe", gyujtokemeny: "Társasházi gyűjtőkémény", nem_tudom: "Nem tudja (alap: tetőn át)" },
-    warranty: { w_2: "2 év (gyári alap)", w_5: "5 év", w_10: "10 év" },
+    rcd: { van: "Van", nincs: "Nincs", nem_tudom: "Nem tudja (felmérésnél pontosítjuk)" },
+    warranty: { w_2: "2 év (gyári alap)", w_5: "5 év", w_10: "10 év", nem_tudom: "Nem tudja (alap: 2 év)" },
+    budget: {
+        b_1m: "1 millió Ft alatt",
+        b_1_1_5: "1–1,5 millió Ft",
+        b_1_5_2: "1,5–2 millió Ft",
+        b_2m: "2 millió Ft felett",
+        b_unsure: "Még nem tudom",
+    },
     timeline: {
         t_asap: "Amint lehet",
         t_month: "Egy hónapon belül",
@@ -328,9 +398,9 @@ const photosLabel = (sel) => {
 };
 
 // ---------------------------------------------------------------------------
-//  Question templates — what the bot says when it asks each field. They follow
-//  the same scannable format the model is told to use: short acknowledgement,
-//  the question in bold on its own line, then at most three bullets.
+//  Question templates — Ferenc's wording, word for word from the original
+//  prompt. Only the recommendation line under question 3 is generated (the
+//  original prompt asked the model to add it too).
 // ---------------------------------------------------------------------------
 const ACKS = ["Rendben.", "Értem.", "Köszönöm!", "Szuper.", "Rendben."];
 
@@ -348,13 +418,13 @@ function questionText(field, sel) {
                 "**Milyen készüléket kell leszerelni?**",
                 "• **Kondenzációs** – modern, műanyag füstcsővel",
                 "• **Hagyományos** – régi, nyílt égésterű vagy turbós",
-                "• Ha nem biztos, nyomja a **Nem tudom** gombot",
+                "• Hagyományosnál a **kéményt is át kell alakítani**",
             ].join("\n");
         case "occupants":
             return [
                 "**Hányan laknak a lakásban?**",
                 "• Ebből tudjuk, mennyi **melegvíz** kell",
-                "• Ez alapján ajánljuk a **készülék típusát**",
+                "• Ez alapján méretezzük a **készülék méretét**",
             ].join("\n");
         case "new_boiler": {
             const lines = ["**Milyen új készüléket szeretne?**", "Mindegyik **kondenzációs**."];
@@ -368,11 +438,26 @@ function questionText(field, sel) {
         }
         case "flue":
             return [
-                "**Hova vezet most a kazán füstcsöve?**",
-                "• **Tetőn keresztül** – a csövet a tetőn vezették ki",
-                "• **Tégla kéménybe** – családi ház, épített kémény",
+                "**Hogyan távozik a kazán füstgáza?**",
+                "• **Tetőn keresztül** – a tetőn kivezetve",
+                "• **Tégla kéménybe** – meglévő, épített kémény",
                 "• **Gyűjtőkémény** – társasházi, közös kémény",
             ].join("\n");
+        case "rcd":
+            return [
+                "**Van a lakásban életvédelmi (Fi-)relé?**",
+                "• Biztonsági kapcsoló a **biztosítékszekrényben**",
+                "• Általában **„TESZT\" gomb** van rajta",
+                "• **Áramütés ellen** véd",
+            ].join("\n");
+        case "warranty":
+            return [
+                "**Hány év garanciát szeretne a készülékre?**",
+                "• **2 év** – gyári alapgarancia, ingyenes",
+                "• **5 vagy 10 év** – felárral kiterjeszthető",
+            ].join("\n");
+        case "budget":
+            return "**Nagyjából milyen összeget szánna a beruházásra?**";
         case "photos":
             return [
                 "**Lefotózná a mostani kazánt?**",
@@ -381,14 +466,14 @@ function questionText(field, sel) {
                 "• Nem kötelező, de így a kolléga **előre felkészül**",
             ].join("\n");
         case "timeline":
-            return "**Mikorra szeretné a cserét?**";
+            return "**Mikorra szeretné a kivitelezést?**";
         case "name":
             return [
                 "Köszönöm, minden megvan a kalkulációhoz!",
                 "",
                 "**Már csak az elérhetőségei kellenek.**",
-                "• Ezen a számon egyeztetjük az **ingyenes felmérést**",
-                "• Utána **azonnal látja** az induló árat",
+                "• Erre küldjük a **személyre szabott árajánlatot**",
+                "• Ezen egyeztetjük az **ingyenes felmérést**",
             ].join("\n");
         default:
             return null;
@@ -463,15 +548,20 @@ function renderCustomerQuote(quote, sel, area) {
         `• Lakók száma: **${lbl("occupants", sel.occupants)}**`,
         `• Új kazán: **${lbl("new_boiler", sel.new_boiler)}**`,
         `• Kémény: **${lbl("flue", sel.flue)}**`,
-        `• Fotók: **${photosLabel(sel)}**`,
-        `• Tervezett csere: **${lbl("timeline", sel.timeline)}**`,
+        `• Életvédelmi (Fi) relé: **${lbl("rcd", sel.rcd)}**`,
+        `• Kért garancia: **${lbl("warranty", sel.warranty)}**`,
+        ...(PHOTO_STEP ? [`• Fotók: **${photosLabel(sel)}**`] : []),
+        ``,
+        `## Ütemezés`,
+        `• Tervezett keret: **${lbl("budget", sel.budget)}**`,
+        `• Tervezett kivitelezés: **${lbl("timeline", sel.timeline)}**`,
         ``,
         `## Az Ön adatai`,
         `• Név: **${sel.name || "—"}**`,
+        `• E-mail: **${sel.email || "—"}**`,
         `• Telefon: **${sel.phone || "—"}**`,
+        `• Irányítószám: **${sel.postal_code || "—"}**`,
     ];
-    if (sel.email) recap.push(`• E-mail: **${sel.email}**`);
-    recap.push(`• Irányítószám: **${sel.postal_code || "—"}**`);
     if (area === "outside") {
         recap.push(``, `Az irányítószáma **kívül eshet** a szokásos területünkön (Budapest és agglomeráció). Kollégánk telefonon egyeztet, hogy vállalható-e.`);
     }
@@ -491,8 +581,8 @@ function renderCustomerQuote(quote, sel, area) {
 // What the widget needs for the controls under the quote.
 function postQuotePayload(sel) {
     return {
-        warranty: sel.warranty || "w_2",
-        warrantyOptions: Object.entries(PRICES.warranty).map(([value, p]) => ({
+        warranty: /^w_/.test(sel.warranty || "") ? sel.warranty : "w_2",
+        warrantyOptions: Object.entries(PRICES.warranty).filter(([value]) => value !== "nem_tudom").map(([value, p]) => ({
             value,
             label: value.replace("w_", "") + " év",
             extra: p.huf ? `+${formatHuf(p.huf)}` : "ingyenes",
@@ -521,7 +611,7 @@ TUDÁSBÁZIS — A CÉGRŐL (ha az ügyfél KÖZBEN kérdez valamit, válaszolj 
 - KIZÁRÓLAG kondenzációs gázkészüléket építünk be (kb. 15–30%-kal kevesebbet fogyaszt egy régi típusnál). Hagyományos, nyílt égésterű vagy turbós készüléket NEM szerelünk be — ezt kedvesen magyarázd el, ha kérik.
 - Ügyintézés: a teljes folyamatot mi visszük — készülék kiválasztása, engedélyeztetés, papírmunka, dokumentált beüzemelés.
 - Árazás elve: a végén az ügyfél INDULÓ árat lát, és mellette pontosan felsorolva, mi jöhet még hozzá. A felmérés után FIX, előre megmondott árat adunk — utólagos ráfizetés nincs.
-- Garancia: 2 év gyári alapgarancia; az ajánlat végén 5 vagy 10 évre bővíthető felárral.
+- Garancia: 2 év gyári alapgarancia; 5 vagy 10 évre bővíthető felárral.
 - Mikor kell cserélni: 12 évnél idősebb készüléket érdemes felülvizsgáltatni, 18 évnél idősebbnél már ajánlott a csere.
 - Gázszag esetén MINDIG mondd: azonnal zárja el a gázt, szellőztessen, és hívja a gázszolgáltató hibabejelentőjét — ne kísérletezzen. Távolról ne diagnosztizálj hibát.
 - Márkák: SOHA ne nevezz meg konkrét márkát vagy típust. A pontos márkát és típust a felmérésen választjuk ki közösen, az otthonhoz és a kerethez igazítva.
@@ -537,19 +627,19 @@ FORMÁZÁS — KÖTELEZŐ MINDEN KÉRDÉSNÉL
 3) Legfeljebb 3 rövid pont, "• " jellel, a kulcsszó **félkövérrel**.
 Soha ne írj hosszú, zárójeles bekezdést.
 
-KÉRDÉSEK SORRENDJE (egyesével):
-1. old_boiler — **Milyen készüléket kell leszerelni?** Értékek: "kondenzacios", "hagyomanyos", "nem_tudom". (A hagyományos régi kémény nem jó kondenzációs kazánhoz — a rendszer beleszámolja, ne kérdezd külön.)
-2. occupants — **Hányan laknak a lakásban?** Értékek: "o_1_2", "o_3_4", "o_5plus", "nem_tudom".
-3. new_boiler — **Milyen új készüléket szeretne?** Mindegyik kondenzációs. 1–2 főnél kombit, 3–4 főnél tárolósat, 5+ főnél külső tárolósat ajánlj. Értékek: "kombi_24", "tarolos_46", "kulso_125", "nem_tudom".
-4. flue — **Hova vezet most a kazán füstcsöve?** Értékek: "teto", "tegla_kemeny", "gyujtokemeny", "nem_tudom".
-5. photos — **Lefotózná a mostani kazánt?** Nem kötelező; a fotót a gombbal lehet csatolni a beszélgetés alatt. Ha az ügyfél nem akar fotót küldeni, az érték "0".
-6. timeline — **Mikorra szeretné a cserét?** Értékek: "t_asap", "t_month", "t_halfyear", "t_thisyear", "t_unsure".
-UTÁNA az elérhetőségeket (név, telefon, irányítószám, opcionálisan e-mail) a RENDSZER kéri be EGY ŰRLAPON. Csak egy rövid átvezető mondatot írj. Ha az ügyfél mégis szabad szöveggel adja meg őket, kérd egyesével a hiányzót (name, phone, postal_code).
-
-NE kérdezd: életvédelmi relét, garanciát, költségkeretet — ezek az ajánlatnál jelennek meg.
+KÉRDÉSEK SORRENDJE (egyesével, a kérdéseket PONTOSAN így fogalmazd):
+1. old_boiler — **Milyen készüléket kell leszerelni?** Pontok: • **Kondenzációs** – modern, műanyag füstcsővel • **Hagyományos** – régi, nyílt égésterű vagy turbós • Hagyományosnál a **kéményt is át kell alakítani**. Értékek: "kondenzacios", "hagyomanyos", "nem_tudom". (A kéményátalakítást a rendszer beleszámolja, ne kérdezd külön.)
+2. occupants — **Hányan laknak a lakásban?** Pontok: • Ebből tudjuk, mennyi **melegvíz** kell • Ez alapján méretezzük a **készülék méretét**. Értékek: "o_1_2", "o_3_4", "o_5plus", "nem_tudom".
+3. new_boiler — **Milyen új készüléket szeretne?** Alatta: "Mindegyik **kondenzációs**." Pontok: • **Kombi (24 kW)** – azonnal melegít, kis helyigény • **Tárolós 46 l** – több melegvíz egyszerre • **Külső 125 l** – nagy családnak. 1–2 főnél a kombit, 3–4 főnél a tárolósat, 5+ főnél a külső tárolósat ajánld egy fél mondatban. Értékek: "kombi_24", "tarolos_46", "kulso_125", "nem_tudom".
+4. flue — **Hogyan távozik a kazán füstgáza?** Pontok: • **Tetőn keresztül** – a tetőn kivezetve • **Tégla kéménybe** – meglévő, épített kémény • **Gyűjtőkémény** – társasházi, közös kémény. Értékek: "teto", "tegla_kemeny", "gyujtokemeny", "nem_tudom".
+5. rcd — **Van a lakásban életvédelmi (Fi-)relé?** Pontok: • Biztonsági kapcsoló a **biztosítékszekrényben** • Általában **„TESZT" gomb** van rajta • **Áramütés ellen** véd. Értékek: "van", "nincs", "nem_tudom".
+6. warranty — **Hány év garanciát szeretne a készülékre?** Pontok: • **2 év** – gyári alapgarancia, ingyenes • **5 vagy 10 év** – felárral kiterjeszthető. Értékek: "w_2", "w_5", "w_10", "nem_tudom".
+7. budget — **Nagyjából milyen összeget szánna a beruházásra?** Felsorolás NEM kell, a gombok magukért beszélnek. Sávok: 1 millió Ft alatt → b_1m; 1–1,5 millió Ft → b_1_1_5; 1,5–2 millió Ft → b_1_5_2; 2 millió Ft felett → b_2m; "Még nem tudom" → b_unsure. Konkrét számot sorolj be a megfelelő sávba.
+8. timeline — **Mikorra szeretné a kivitelezést?** Felsorolás NEM kell. Értékek: "t_asap", "t_month", "t_halfyear", "t_thisyear", "t_unsure".
+UTÁNA a négy elérhetőségi adatot (név, e-mail, telefon, irányítószám) a RENDSZER kéri be EGY ŰRLAPON. Csak egy rövid átvezető mondatot írj. Ha az ügyfél mégis szabad szöveggel adja meg őket, kérd egyesével a hiányzót (name, email, phone, postal_code).
 
 REJTETT ÁLLAPOT (KÖTELEZŐ MINDEN VÁLASZ VÉGÉN, az ügyfél NEM látja). Csak azt töltsd ki, amit az ügyfél ténylegesen megválaszolt, a többi "":
-<!--DATA:{"old_boiler":"","occupants":"","new_boiler":"","flue":"","photos":"","timeline":"","name":"","email":"","phone":"","postal_code":""}-->
+<!--DATA:{"old_boiler":"","occupants":"","new_boiler":"","flue":"","rcd":"","warranty":"","budget":"","timeline":"","name":"","email":"","phone":"","postal_code":""}-->
 Az árat NE te írd ki; a rendszer számolja. A választógombokat a rendszer jeleníti meg.`;
 
 // ---------------------------------------------------------------------------
@@ -672,8 +762,7 @@ async function finishWithQuote(sel, response, photos) {
 function cleanLeadSel(lead) {
     const raw = lead && lead.sel && typeof lead.sel === "object" ? lead.sel : null;
     if (!raw) return null;
-    const keys = ["old_boiler", "occupants", "new_boiler", "flue", "photos", "timeline",
-        "warranty", "name", "email", "phone", "postal_code"];
+    const keys = [...FIELD_ORDER, "photos"];
     const sel = {};
     for (const k of keys) {
         if (raw[k] != null && typeof raw[k] !== "object") sel[k] = String(raw[k]).slice(0, 120);
@@ -895,13 +984,15 @@ function leadDetailsHtml(sel, area) {
       ${row("Telefon", sel.phone || "-")}
       ${row("E-mail", sel.email || "nem adta meg")}
       ${row("Irányítószám", `${sel.postal_code || "-"} (${AREA_LABELS[area] || area})`)}
-      ${row("Tervezett csere", lbl("timeline", sel.timeline))}
+      ${row("Tervezett kivitelezés", lbl("timeline", sel.timeline))}
+      ${row("Tervezett keret", lbl("budget", sel.budget))}
       ${row("Leszerelendő", lbl("old_boiler", sel.old_boiler))}
       ${row("Lakók", lbl("occupants", sel.occupants))}
       ${row("Új kazán", lbl("new_boiler", sel.new_boiler))}
       ${row("Kémény", lbl("flue", sel.flue))}
+      ${row("Fi-relé", lbl("rcd", sel.rcd))}
       ${row("Garancia", lbl("warranty", sel.warranty))}
-      ${row("Fotók", photosLabel(sel))}
+      ${PHOTO_STEP ? row("Fotók", photosLabel(sel)) : ""}
     </table>`;
 }
 
@@ -937,12 +1028,14 @@ async function sendOwnerEmail(sel, quote, { area, attachments }) {
         `Telefon: ${sel.phone || "-"}`,
         `E-mail: ${sel.email || "nem adta meg"}`,
         `Irányítószám: ${sel.postal_code || "-"} (${AREA_LABELS[area] || area})`,
-        `Tervezett csere: ${lbl("timeline", sel.timeline)}`,
+        `Tervezett kivitelezés: ${lbl("timeline", sel.timeline)}`,
+        `Tervezett keret: ${lbl("budget", sel.budget)}`,
         `Leszerelendő: ${lbl("old_boiler", sel.old_boiler)}`,
         `Lakók: ${lbl("occupants", sel.occupants)}`,
         `Új kazán: ${lbl("new_boiler", sel.new_boiler)}`,
         `Kémény: ${lbl("flue", sel.flue)}`,
-        `Fotók: ${photosLabel(sel)}`,
+        `Fi-relé: ${lbl("rcd", sel.rcd)}`,
+        `Garancia: ${lbl("warranty", sel.warranty)}`,
         "",
         ...quote.items.map(i => `- ${i.label}: ${formatHuf(i.huf)}`),
         "",
@@ -1028,9 +1121,8 @@ async function sendCustomerEmail(sel, quote) {
 
 // ---------------------------------------------------------------------------
 //  Google Sheet logging (optional, SHEETS_WEBHOOK_URL). The first 14 columns
-//  keep their original order so an existing sheet does not shift; questions
-//  that are no longer asked are written as "nem kérdezett", and the new data
-//  is appended at the end.
+//  are the original v1 layout, so an existing sheet does not shift; the two
+//  newer columns are appended at the end.
 // ---------------------------------------------------------------------------
 async function sendLeadToSheet(sel, quote, area) {
     const url = process.env.SHEETS_WEBHOOK_URL;
@@ -1044,14 +1136,14 @@ async function sendLeadToSheet(sel, quote, area) {
         sel.phone || "",                        // Telefon
         sel.email || "",                        // E-mail
         sel.postal_code || "",                  // Irányítószám
-        "nem kérdezett",                        // Tervezett keret
+        lbl("budget", sel.budget),              // Tervezett keret
         lbl("timeline", sel.timeline),          // Tervezett kivitelezés
         lbl("old_boiler", sel.old_boiler),      // Leszerelendő készülék
         lbl("occupants", sel.occupants),        // Lakók száma
         lbl("new_boiler", sel.new_boiler),      // Új kazán
         lbl("flue", sel.flue),                  // Kémény
-        "nem kérdezett",                        // Életvédelmi relé
-        lbl("warranty", sel.warranty),          // Garancia (az ajánlat pillanatában)
+        lbl("rcd", sel.rcd),                    // Életvédelmi relé
+        lbl("warranty", sel.warranty),          // Kért garancia
         quote.total,                            // Induló ár (Ft)
         Number(sel.photos || 0),                // Fotók száma
         AREA_LABELS[area] || area,              // Terület

@@ -2,12 +2,11 @@
 
 A Hungarian gas‑boiler quoting chat widget for **Aqua System Service Kft.**
 (egynapos gázkészülék csere, Budapest és agglomeráció). The customer answers
-five short questions (clicking buttons **or** typing freely), can attach photos
-of the old boiler, gives a phone number, and immediately sees an itemised
-**induló ár** (floor price) with everything that could be added on top spelled
-out. Under the quote they can pick a warranty and request a survey slot. The
-owner gets the lead by e‑mail with the photos attached, and a second e‑mail
-when a survey slot is requested.
+Ferenc's eight questions (clicking buttons **or** typing freely), fills in one
+contact form, and immediately sees an itemised **induló ár** (floor price) with
+everything that could be added on top spelled out. Under the quote they can
+change the warranty and request a survey slot. The owner gets the lead by
+e‑mail, and a second e‑mail when a survey slot is requested.
 
 Forked from the *Kazán Kecskemét* (gazszerelokecskemet) widget.
 
@@ -17,40 +16,43 @@ Forked from the *Kazán Kecskemét* (gazszerelokecskemet) widget.
 
 ---
 
-## The flow (v2, 2026-10-02)
+## The questions are Ferenc's
 
-1. **Mit kell leszerelni?** kondenzációs / hagyományos / nem tudom
-2. **Hányan laknak a lakásban?** sizes the hot-water demand
-3. **Milyen új készüléket szeretne?** the button that fits the household is
-   highlighted as *ajánlott* (1–2 fő: kombi, 3–4: tárolós 46 l, 5+: külső 125 l)
-4. **Hova vezet most a kazán füstcsöve?** tető / tégla kémény / gyűjtőkémény
-5. **Lefotózná a mostani kazánt?** optional, up to 3 photos, or *Kihagyom*
-6. **Mikorra szeretné a cserét?**
-7. One contact form: name, phone, postal code, e‑mail (**optional**)
-8. The quote, then a panel with **warranty** (2 / 5 / 10 év, the price bubble
-   updates in place), **survey booking** (next 8 working days × délelőtt /
-   délután / bármikor) and, if enabled, **e‑mail me the quote**
+The eight questions, their order, wording and buttons were written by the
+client (Ferenc). **Do not add, drop, reorder or reword them without his OK.**
+They live word for word in `questionText()` and `CHIP_MAP` in
+`api/faq-agent.js`.
 
-What changed from v1, and why:
+1. **Milyen készüléket kell leszerelni?** kondenzációs / hagyományos / nem tudom
+2. **Hányan laknak a lakásban?** (the matching boiler is tagged *ajánlott* in Q3)
+3. **Milyen új készüléket szeretne?** kombi 24 kW / tárolós 46 l / külső 125 l
+4. **Hogyan távozik a kazán füstgáza?** tető / tégla kémény / gyűjtőkémény
+5. **Van a lakásban életvédelmi (Fi-)relé?** van / nincs / nem tudom
+6. **Hány év garanciát szeretne a készülékre?** 2 / 5 / 10 év
+7. **Nagyjából milyen összeget szánna a beruházásra?** budget bands
+8. **Mikorra szeretné a kivitelezést?**
+
+Then one form: név, e‑mail, telefon, irányítószám (all required). Then the
+quote, with a panel to change the warranty, request a survey slot, and (if
+enabled) get the quote by e‑mail.
+
+An optional photo step ("fotózza le a kazánt") is built but **off**
+(`PHOTO_STEP = false`), because it is not one of Ferenc's questions.
+
+## What the 2026 rebuild added (around his questions)
 
 | Change | Why |
 |---|---|
-| Button clicks are answered from **templates in the backend**, no AI call | Every click used to wait 1–3 s for the model. Now it is instant and costs nothing. The model only runs when the customer types something we can't map. |
-| Short typed answers are mapped too ("4", "kombi", "régi turbós", "minél hamarabb") | Same speed for people who type instead of clicking. Questions ("mi a különbség…?") still go to the model. |
-| **Budget** question removed | The lowest band ("1 millió alatt") was below the cheapest possible quote, and it was asked before the customer had seen any price. |
-| **Fi-relé** question removed | Laypeople can't answer it. The floor price assumes "van"; "nincs" is listed as a +50 000 Ft surcharge. |
-| **Warranty** moved onto the quote | It is an upsell. It sells better next to the price than as question 6. |
-| **Photo step** added | The owner sees the boiler and flue before calling, so many visits can be prepared or judged in advance. |
-| **Floor price** ("Induló ár: X Ft-tól") + named surcharges | A single "becsült végösszeg" anchors the customer low; every "Nem tudom" now shows exactly what the dearer variant adds. |
-| **E‑mail optional** | The owner calls; every extra required field loses people. |
-| **Survey booking** under the quote | Turns a quote into an appointment. It is a *request*, confirmed by phone; there is no live calendar. |
-| **Service area check** (postal code) | Outside Budapest + agglomeráció the customer gets a soft note and the owner e‑mail a red flag. Never blocks the quote. Edit `AGGLO_POSTAL_CODES`. |
-| **Owner e‑mail**: call button, *Sürgős* flag (timeline = amint lehet), area flag, photos attached, surcharges the customer was told | Built to be read on a phone between jobs. |
-| Chat **survives reloads** and navigation (sessionStorage) | A half-finished quote no longer disappears when the visitor clicks to another page. The teaser then says "Folytassa az árajánlatot". |
-| **Deep link** `?ajanlat` / `#ajanlat` and `window.AquaWidget.open()` | For the Google Business Profile, ads, Facebook posts, QR codes. |
-| **Auto-open** option (`autoOpenDelay`) | Opens once per visit, desktop only. The website uses it on /kazancsere only. |
-| Post-quote actions **re-price on the server** and HTML-escape everything | The old `email_customer` action trusted a total and labels sent from the browser. |
-| If the AI is down, the current question is repeated **with its buttons** | The customer is never stuck on an error message. |
+| Button clicks are answered from **templates in the backend**, no AI call | Every click used to wait 1–3 s for the model. Now it is instant, costs nothing, and the quote works even when the AI account has no credit. |
+| Short typed answers are mapped too ("4", "kombi", "régi turbós", "1,8 millió") | Same speed for people who type. Questions ("mi a különbség…?") still go to the model. |
+| **Floor price** ("Induló ár: X Ft-tól") + named surcharges | Every "Nem tudom" shows exactly what the dearer variant adds. |
+| **Survey booking** under the quote | Turns a quote into an appointment. A *request*, confirmed by phone; no live calendar. |
+| **Service area check** (postal code) | Outside Budapest + agglomeráció: soft note to the customer, red flag in the owner e‑mail. Never blocks the quote. Edit `AGGLO_POSTAL_CODES`. |
+| **Owner e‑mail**: call button, *Sürgős* flag, area flag | Built to be read on a phone between jobs. |
+| Chat **survives reloads** and navigation | A half-finished quote no longer disappears. |
+| **Deep link** `?ajanlat` / `#ajanlat`, `window.AquaWidget.open()`, `autoOpenDelay` | For the Google profile, ads, QR codes; the website auto-opens on /kazancsere only. |
+| Post-quote actions **re-price on the server** and HTML-escape everything | The old `email_customer` action trusted data sent from the browser. |
+| If the AI is down, the current question is repeated **with its buttons** | The customer is never stuck. |
 
 ---
 
@@ -91,8 +93,8 @@ Edit them in **one place**: `PRICES` at the top of
 | Leszerelendő: kondenzációs / hagyományos | +0 / +60 000, and hagyományos adds **+260 000** kéményátalakítás |
 | Új kazán: kombi 24 kW / tárolós 46 l / külső 125 l | +450 000 / +900 000 / +900 000 |
 | Kémény: tetőn át / tégla kéménybe / gyűjtőkémény | +380 000 / +600 000 / +600 000 |
-| Fi-relé ellenőrzése, bekötése (always) | +50 000 (if there is none: +50 000 more, shown as a surcharge) |
-| Garancia: 2 / 5 / 10 év (picked on the quote) | +0 / +60 000 / +150 000 |
+| Fi-relé: van / nincs / nem tudom | +50 000 / +100 000 / +50 000 (nem tudom also lists the +50 000 surcharge) |
+| Garancia: 2 / 5 / 10 év (question 6, changeable on the quote) | +0 / +60 000 / +150 000 |
 | Always: vizes rendszer, üzembe helyezés, bontás | +300 000, +50 000, +90 000 |
 
 "Nem tudom" prices the cheapest variant **and** adds a surcharge line with the
@@ -130,8 +132,7 @@ exact difference to the dearer one.
 ## Leads → Google Sheet (optional)
 
 Header row, in this order (the first 14 columns are unchanged from v1, so an
-existing sheet keeps working; v2 writes "nem kérdezett" into the two retired
-columns and appends two):
+existing sheet keeps working; two columns are appended):
 
 `Időbélyeg | Név | Telefon | E-mail | Irányítószám | Tervezett keret | Tervezett kivitelezés | Leszerelendő készülék | Lakók száma | Új kazán | Kémény | Életvédelmi relé | Kért garancia | Induló ár (Ft) | Fotók száma | Terület`
 
@@ -158,10 +159,9 @@ with the survey-booking e‑mail.
 
 - **Prices:** `PRICES` in `api/faq-agent.js`.
 - **Service area:** `AGGLO_POSTAL_CODES` in `api/faq-agent.js`.
-- **Questions / wording:** the templates in `questionText()`; the model's copy
+- **Questions / wording:** Ferenc's, see above. The templates are in `questionText()`; the model's copy
   in `SYSTEM_PROMPT`. Adding or removing a question means updating `CHIP_MAP`,
-  `CHIP_VALUES`, `SYNONYMS`, `LABELS`, `FIELD_ORDER`, `PROGRESS_FIELDS`,
-  `REQUIRED`, the recap in `renderCustomerQuote`, the sheet `row`, and the
+  `CHIP_VALUES`, `SYNONYMS`, `LABELS`, `PROJECT_FIELDS`, the recap in `renderCustomerQuote`, the sheet `row`, and the
   `aqua-system` field list in the quoting-dashboard repo.
 - **Colours / branding:** `public/style.css`; logo `public/logo.webp`.
 - **Phone / brand name:** `PHONE` and `BRAND` in `public/widget.js`, `PHONE`

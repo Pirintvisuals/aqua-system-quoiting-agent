@@ -410,7 +410,7 @@
     }
 
     track("quote_started");
-    addMessage("bot", `Üdvözlöm az **${BRAND}** árajánló asszisztensénél!\n\n• **5 rövid kérdés**, körülbelül egy perc\n• A végén **azonnal látja az induló árat**\n• Közben **bármit kérdezhet** – ár, márkák, garancia`);
+    addMessage("bot", `Üdvözlöm az **${BRAND}** árajánló asszisztensénél!\n\n• **8 rövid kérdés**, körülbelül egy perc\n• A végén **azonnal látja az induló árat**\n• Közben **bármit kérdezhet** – ár, márkák, garancia`);
     startQuote();
   }
 
@@ -639,21 +639,20 @@
   }
 
   // --- Contact form --------------------------------------------------------
-  // E-mail is optional: the owner calls, so the phone number is what matters,
-  // and every extra required field loses people.
+  // Ferenc's four contact fields, all required, in his order.
   const CONTACT_FIELDS = [
     { key: "name", label: "Név", type: "text", ph: "Kovács Anna", auto: "name",
       err: "Kérjük, adja meg a nevét.",
       ok: (v) => v.trim().length >= 2 },
+    { key: "email", label: "E-mail", type: "email", ph: "anna@example.hu", auto: "email",
+      err: "Ez az e-mail cím nem tűnik helyesnek.",
+      ok: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) },
     { key: "phone", label: "Telefonszám", type: "tel", ph: "+36 30 123 4567", auto: "tel",
       err: "Kérjük, adjon meg egy elérhető telefonszámot.",
       ok: (v) => (v.replace(/\D/g, "").length >= 7) },
     { key: "postal_code", label: "Irányítószám", type: "text", ph: "1117", auto: "postal-code",
       err: "Az irányítószám 4 számjegy.",
       ok: (v) => /^\d{4}$/.test(v.trim()) },
-    { key: "email", label: "E-mail (nem kötelező)", type: "email", ph: "anna@example.hu", auto: "email",
-      err: "Ez az e-mail cím nem tűnik helyesnek.",
-      ok: (v) => !v.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) },
   ];
 
   function renderContactForm() {
@@ -665,7 +664,7 @@
 
     const title = document.createElement("div");
     title.className = "faq-form-title";
-    title.textContent = "Hol érjük el?";
+    title.textContent = "Hova küldjük az árajánlatot?";
     form.appendChild(title);
 
     const inputs = {};
@@ -696,7 +695,7 @@
     const submit = document.createElement("button");
     submit.type = "submit";
     submit.className = "faq-form-submit";
-    submit.textContent = "Mutasd az árat";
+    submit.textContent = "Árajánlat kérése";
     form.appendChild(submit);
 
     const note = document.createElement("div");
@@ -726,7 +725,7 @@
       // The backend sees the state is complete and prices it without a model call.
       convState = Object.assign({}, convState, values);
       submit.disabled = true;
-      sendMessage([values.name, values.phone, values.postal_code, values.email].filter(Boolean).join(" · "));
+      sendMessage([values.name, values.email, values.phone, values.postal_code].join(" · "));
     };
 
     messagesContainer.appendChild(form);
