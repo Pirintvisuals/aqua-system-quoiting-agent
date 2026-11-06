@@ -49,14 +49,14 @@ const PRICES = {
         nincs:     { huf: 100000, label: "Életvédelmi (Fi) relé: nincs — kiépítés szükséges" },
         nem_tudom: { huf: 50000,  label: "Életvédelmi (Fi) relé (alap — a felmérésnél pontosítjuk)" },
     },
-    // Hány év garanciát kér az ügyfél (Ferenc 6. kérdése). A kész ajánlaton
-    // még módosítható. ÁRAT ELLENŐRIZNI: irányárak, írd át az Aqua System
-    // saját áraira.
+    // Garancia (Ferenc 6. kérdése). Ferenc, 2026-11: a garanciát törvény
+    // szabályozza — 3 év magánszemélynek (cégnek 1 év). 10 év is lehet, de az
+    // MÁSIK készüléket jelent, nem kiterjesztést. Köztes lehetőség nincs.
+    // ÁRAT ELLENŐRIZNI: a 10 éves garanciájú készülék felára irányár.
     warranty: {
-        w_2:       { huf: 0,      label: "Garancia: 2 év (gyári alapgarancia)" },
-        w_5:       { huf: 60000,  label: "Kiterjesztett garancia: 5 év" },
-        w_10:      { huf: 150000, label: "Kiterjesztett garancia: 10 év" },
-        nem_tudom: { huf: 0,      label: "Garancia: 2 év (alap — a felmérésnél pontosítjuk)" },
+        w_3:       { huf: 0,      label: "Garancia: 3 év (törvényi garancia)" },
+        w_10:      { huf: 150000, label: "10 év garanciás készülék (felár)" },
+        nem_tudom: { huf: 0,      label: "Garancia: 3 év (törvényi garancia — a felmérésnél pontosítjuk)" },
     },
     // Mindig felszámolt standard tételek
     standard: {
@@ -200,7 +200,7 @@ const CHIP_MAP = {
     new_boiler: ["Kombi (24 kW)", "Tárolós (46 l)", "Külső tároló (125 l)", "Nem tudom"],
     flue: ["Tetőn keresztül", "Tégla kéménybe", "Társasházi gyűjtőkémény", "Nem tudom"],
     rcd: ["Van", "Nincs", "Nem tudom"],
-    warranty: ["2 év (alap)", "5 év", "10 év", "Nem tudom"],
+    warranty: ["3 év (alap)", "10 év", "Nem tudom"],
     budget: ["1 millió Ft alatt", "1–1,5 millió Ft", "1,5–2 millió Ft", "2 millió Ft felett", "Még nem tudom"],
     timeline: ["Amint lehet", "Egy hónapon belül", "Fél éven belül", "Még idén", "Még nem tudom"],
 };
@@ -212,7 +212,7 @@ const CHIP_VALUES = {
     new_boiler: { "kombi (24 kw)": "kombi_24", "tárolós (46 l)": "tarolos_46", "külső tároló (125 l)": "kulso_125", "nem tudom": "nem_tudom" },
     flue: { "tetőn keresztül": "teto", "tégla kéménybe": "tegla_kemeny", "társasházi gyűjtőkémény": "gyujtokemeny", "nem tudom": "nem_tudom" },
     rcd: { "van": "van", "nincs": "nincs", "nem tudom": "nem_tudom" },
-    warranty: { "2 év (alap)": "w_2", "5 év": "w_5", "10 év": "w_10", "nem tudom": "nem_tudom" },
+    warranty: { "3 év (alap)": "w_3", "10 év": "w_10", "nem tudom": "nem_tudom" },
     budget: {
         "1 millió ft alatt": "b_1m",
         "1–1,5 millió ft": "b_1_1_5",
@@ -258,8 +258,7 @@ const SYNONYMS = {
     ],
     warranty: [
         [/^10\b|tíz|tiz/, "w_10"],
-        [/^5\b|^öt\b|^ot\b/, "w_5"],
-        [/^2\b|kettő|ketto|alap|ingyen/, "w_2"],
+        [/^3\b|három|harom|alap|törvény|torveny/, "w_3"],
     ],
     timeline: [
         [/azonnal|sürgős|surgos|minél|minel|asap|amint/, "t_asap"],
@@ -363,7 +362,7 @@ const LABELS = {
     new_boiler: { kombi_24: "Kondenzációs kombi (24 kW)", tarolos_46: "Kondenzációs tárolós, 46 l (24 kW)", kulso_125: "Kondenzációs + külső tároló, 125 l (24 kW)", nem_tudom: "Nem tudja (alap: kombi)" },
     flue: { teto: "Tetőn keresztül", tegla_kemeny: "Tégla kéménybe", gyujtokemeny: "Társasházi gyűjtőkémény", nem_tudom: "Nem tudja (alap: tetőn át)" },
     rcd: { van: "Van", nincs: "Nincs", nem_tudom: "Nem tudja (felmérésnél pontosítjuk)" },
-    warranty: { w_2: "2 év (gyári alap)", w_5: "5 év", w_10: "10 év", nem_tudom: "Nem tudja (alap: 2 év)" },
+    warranty: { w_3: "3 év (törvényi)", w_10: "10 év (10 év garanciás készülék)", nem_tudom: "Nem tudja (alap: 3 év)" },
     budget: {
         b_1m: "1 millió Ft alatt",
         b_1_1_5: "1–1,5 millió Ft",
@@ -398,18 +397,12 @@ const photosLabel = (sel) => {
 };
 
 // ---------------------------------------------------------------------------
-//  Question templates — Ferenc's wording, word for word from the original
-//  prompt. Only the recommendation line under question 3 is generated (the
-//  original prompt asked the model to add it too).
+//  Question templates — Ferenc's wording. Questions 3 and 6 carry his
+//  corrections from November 2026 (boiler types by home type; 3 or 10 years
+//  of warranty, nothing in between).
 // ---------------------------------------------------------------------------
 const ACKS = ["Rendben.", "Értem.", "Köszönöm!", "Szuper.", "Rendben."];
 
-const RECOMMEND = {
-    o_1_2: "1–2 főhöz általában a **kombi** is bőven elég.",
-    o_3_4: "3–4 főhöz a **tárolós (46 l)** a kényelmes választás.",
-    o_5plus: "5 vagy több főhöz a **külső 125 literes** tárolót ajánljuk.",
-};
-const RECOMMEND_CHIP = { o_1_2: "Kombi (24 kW)", o_3_4: "Tárolós (46 l)", o_5plus: "Külső tároló (125 l)" };
 
 function questionText(field, sel) {
     switch (field) {
@@ -428,11 +421,10 @@ function questionText(field, sel) {
             ].join("\n");
         case "new_boiler": {
             const lines = ["**Milyen új készüléket szeretne?**", "Mindegyik **kondenzációs**."];
-            if (RECOMMEND[sel.occupants]) lines.push(RECOMMEND[sel.occupants]);
             lines.push(
-                "• **Kombi (24 kW)** – azonnal melegít, kis helyigény",
-                "• **Tárolós 46 l** – több melegvíz egyszerre",
-                "• **Külső 125 l** – nagy családnak",
+                "• **Kombi (24 kW)** – lakásba",
+                "• **Tárolós 46 l** – lakásba vagy kisebb családi házba, nagyobb melegvíz-komfortért",
+                "• **Külső 125 l** – családi házba",
             );
             return lines.join("\n");
         }
@@ -453,8 +445,8 @@ function questionText(field, sel) {
         case "warranty":
             return [
                 "**Hány év garanciát szeretne a készülékre?**",
-                "• **2 év** – gyári alapgarancia, ingyenes",
-                "• **5 vagy 10 év** – felárral kiterjeszthető",
+                "• **3 év** – törvényi garancia magánszemélyeknek",
+                "• **10 év** – másik, 10 év garanciás készülékkel",
             ].join("\n");
         case "budget":
             return "**Nagyjából milyen összeget szánna a beruházásra?**";
@@ -485,7 +477,6 @@ function askPayload(field, sel) {
     const progress = PROGRESS_FIELDS.filter((f) => filled(sel, f)).length;
     return {
         chips: CHIP_MAP[field] || [],
-        recommendedChip: field === "new_boiler" ? (RECOMMEND_CHIP[sel.occupants] || null) : null,
         photoStep: field === "photos",
         contactForm: field === "name",
         state: sel,
@@ -521,7 +512,7 @@ function renderCustomerQuote(quote, sel, area) {
         `Vizes rendszerre kötés mágneses iszapleválasztóval`,
     ];
     if (sel.old_boiler === "hagyomanyos") included.push(`Kéményátalakítás saválló béléscsővel`);
-    included.push(`${lbl("warranty", sel.warranty)} garancia a készülékre`);
+    included.push(sel.warranty === "w_10" ? `10 év garancia (10 év garanciás készülék)` : `3 év törvényi garancia (magánszemélyeknek; cégeknek 1 év)`);
     included.push(`Ügyintézés és a dokumentált beüzemelés`);
 
     const excluded = [
@@ -581,11 +572,11 @@ function renderCustomerQuote(quote, sel, area) {
 // What the widget needs for the controls under the quote.
 function postQuotePayload(sel) {
     return {
-        warranty: /^w_/.test(sel.warranty || "") ? sel.warranty : "w_2",
+        warranty: /^w_/.test(sel.warranty || "") ? sel.warranty : "w_3",
         warrantyOptions: Object.entries(PRICES.warranty).filter(([value]) => value !== "nem_tudom").map(([value, p]) => ({
             value,
             label: value.replace("w_", "") + " év",
-            extra: p.huf ? `+${formatHuf(p.huf)}` : "ingyenes",
+            extra: p.huf ? `+${formatHuf(p.huf)}` : "alap",
         })),
         emailOffer: EMAIL_OFFER_ENABLED && !!sel.email,
     };
@@ -611,7 +602,7 @@ TUDÁSBÁZIS — A CÉGRŐL (ha az ügyfél KÖZBEN kérdez valamit, válaszolj 
 - KIZÁRÓLAG kondenzációs gázkészüléket építünk be (kb. 15–30%-kal kevesebbet fogyaszt egy régi típusnál). Hagyományos, nyílt égésterű vagy turbós készüléket NEM szerelünk be — ezt kedvesen magyarázd el, ha kérik.
 - Ügyintézés: a teljes folyamatot mi visszük — készülék kiválasztása, engedélyeztetés, papírmunka, dokumentált beüzemelés.
 - Árazás elve: a végén az ügyfél INDULÓ árat lát, és mellette pontosan felsorolva, mi jöhet még hozzá. A felmérés után FIX, előre megmondott árat adunk — utólagos ráfizetés nincs.
-- Garancia: 2 év gyári alapgarancia; 5 vagy 10 évre bővíthető felárral.
+- Garancia: törvény szabályozza — magánszemélyeknek 3 év, cégeknek 1 év. 10 év garancia is lehetséges, de az MÁSIK típusú készüléket jelent (nem kiterjesztés). Köztes lehetőség (pl. 5 év) NINCS: vagy 3 év, vagy 10 év.
 - Mikor kell cserélni: 12 évnél idősebb készüléket érdemes felülvizsgáltatni, 18 évnél idősebbnél már ajánlott a csere.
 - Gázszag esetén MINDIG mondd: azonnal zárja el a gázt, szellőztessen, és hívja a gázszolgáltató hibabejelentőjét — ne kísérletezzen. Távolról ne diagnosztizálj hibát.
 - Márkák: SOHA ne nevezz meg konkrét márkát vagy típust. A pontos márkát és típust a felmérésen választjuk ki közösen, az otthonhoz és a kerethez igazítva.
@@ -630,10 +621,10 @@ Soha ne írj hosszú, zárójeles bekezdést.
 KÉRDÉSEK SORRENDJE (egyesével, a kérdéseket PONTOSAN így fogalmazd):
 1. old_boiler — **Milyen készüléket kell leszerelni?** Pontok: • **Kondenzációs** – modern, műanyag füstcsővel • **Hagyományos** – régi, nyílt égésterű vagy turbós • Hagyományosnál a **kéményt is át kell alakítani**. Értékek: "kondenzacios", "hagyomanyos", "nem_tudom". (A kéményátalakítást a rendszer beleszámolja, ne kérdezd külön.)
 2. occupants — **Hányan laknak a lakásban?** Pontok: • Ebből tudjuk, mennyi **melegvíz** kell • Ez alapján méretezzük a **készülék méretét**. Értékek: "o_1_2", "o_3_4", "o_5plus", "nem_tudom".
-3. new_boiler — **Milyen új készüléket szeretne?** Alatta: "Mindegyik **kondenzációs**." Pontok: • **Kombi (24 kW)** – azonnal melegít, kis helyigény • **Tárolós 46 l** – több melegvíz egyszerre • **Külső 125 l** – nagy családnak. 1–2 főnél a kombit, 3–4 főnél a tárolósat, 5+ főnél a külső tárolósat ajánld egy fél mondatban. Értékek: "kombi_24", "tarolos_46", "kulso_125", "nem_tudom".
+3. new_boiler — **Milyen új készüléket szeretne?** Alatta: "Mindegyik **kondenzációs**." Pontok: • **Kombi (24 kW)** – lakásba • **Tárolós 46 l** – lakásba vagy kisebb családi házba, nagyobb melegvíz-komfortért • **Külső 125 l** – családi házba. Ha tanácsot kér: a kombi lakásba való; a beépített tárolós lakásba vagy kisebb családi házba, ha nagyobb melegvíz-komfort kell; a külső tárolós családi házba. Lakásba külső tárolósat NE ajánlj. Értékek: "kombi_24", "tarolos_46", "kulso_125", "nem_tudom".
 4. flue — **Hogyan távozik a kazán füstgáza?** Pontok: • **Tetőn keresztül** – a tetőn kivezetve • **Tégla kéménybe** – meglévő, épített kémény • **Gyűjtőkémény** – társasházi, közös kémény. Értékek: "teto", "tegla_kemeny", "gyujtokemeny", "nem_tudom".
 5. rcd — **Van a lakásban életvédelmi (Fi-)relé?** Pontok: • Biztonsági kapcsoló a **biztosítékszekrényben** • Általában **„TESZT" gomb** van rajta • **Áramütés ellen** véd. Értékek: "van", "nincs", "nem_tudom".
-6. warranty — **Hány év garanciát szeretne a készülékre?** Pontok: • **2 év** – gyári alapgarancia, ingyenes • **5 vagy 10 év** – felárral kiterjeszthető. Értékek: "w_2", "w_5", "w_10", "nem_tudom".
+6. warranty — **Hány év garanciát szeretne a készülékre?** Pontok: • **3 év** – törvényi garancia magánszemélyeknek • **10 év** – másik, 10 év garanciás készülékkel. Értékek: "w_3", "w_10", "nem_tudom".
 7. budget — **Nagyjából milyen összeget szánna a beruházásra?** Felsorolás NEM kell, a gombok magukért beszélnek. Sávok: 1 millió Ft alatt → b_1m; 1–1,5 millió Ft → b_1_1_5; 1,5–2 millió Ft → b_1_5_2; 2 millió Ft felett → b_2m; "Még nem tudom" → b_unsure. Konkrét számot sorolj be a megfelelő sávba.
 8. timeline — **Mikorra szeretné a kivitelezést?** Felsorolás NEM kell. Értékek: "t_asap", "t_month", "t_halfyear", "t_thisyear", "t_unsure".
 UTÁNA a négy elérhetőségi adatot (név, e-mail, telefon, irányítószám) a RENDSZER kéri be EGY ŰRLAPON. Csak egy rövid átvezető mondatot írj. Ha az ügyfél mégis szabad szöveggel adja meg őket, kérd egyesével a hiányzót (name, email, phone, postal_code).
@@ -728,7 +719,7 @@ function cleanPhotos(photos) {
 
 // Price, notify and render the finished quote.
 async function finishWithQuote(sel, response, photos) {
-    sel.warranty = sel.warranty || "w_2";
+    sel.warranty = sel.warranty || "w_3";
     const quote = buildQuote(sel);
     const area = classifyArea(sel.postal_code);
     const attachments = cleanPhotos(photos);

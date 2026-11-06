@@ -646,7 +646,8 @@
 
 .faq-seg {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr; /* equal widths for 2 (warranty) or 3 (time slot) options */
   gap: 6px;
 }
 .faq-seg-btn {

@@ -11,7 +11,7 @@ e‑mail, and a second e‑mail when a survey slot is requested.
 Forked from the *Kazán Kecskemét* (gazszerelokecskemet) widget.
 
 > **Prices to confirm with the client.** The **chimney conversion
-> (260 000 Ft)** and the **extended warranty (5 év +60 000 / 10 év +150 000)**
+> (260 000 Ft)** and the **10-year-warranty appliance surcharge (+150 000 Ft)**
 > are placeholders. Replace them with Aqua System's own numbers in `PRICES`.
 
 ---
@@ -23,12 +23,18 @@ client (Ferenc). **Do not add, drop, reorder or reword them without his OK.**
 They live word for word in `questionText()` and `CHIP_MAP` in
 `api/faq-agent.js`.
 
+Ferenc's corrections, November 2026: boiler types are described by **home type**
+(kombi lakásba; beépített tárolós lakásba vagy kisebb családi házba, nagyobb
+melegvíz-komfortért; külső tárolós családi házba), and warranty is set by law:
+**3 év** for private customers (1 év for companies), or **10 év**, which means a
+different appliance, not an extension. Nothing in between.
+
 1. **Milyen készüléket kell leszerelni?** kondenzációs / hagyományos / nem tudom
-2. **Hányan laknak a lakásban?** (the matching boiler is tagged *ajánlott* in Q3)
-3. **Milyen új készüléket szeretne?** kombi 24 kW / tárolós 46 l / külső 125 l
+2. **Hányan laknak a lakásban?**
+3. **Milyen új készüléket szeretne?** kombi (lakásba) / tárolós 46 l (lakásba vagy kisebb családi házba) / külső 125 l (családi házba)
 4. **Hogyan távozik a kazán füstgáza?** tető / tégla kémény / gyűjtőkémény
 5. **Van a lakásban életvédelmi (Fi-)relé?** van / nincs / nem tudom
-6. **Hány év garanciát szeretne a készülékre?** 2 / 5 / 10 év
+6. **Hány év garanciát szeretne a készülékre?** 3 év (törvényi) / 10 év (másik készülék)
 7. **Nagyjából milyen összeget szánna a beruházásra?** budget bands
 8. **Mikorra szeretné a kivitelezést?**
 
@@ -94,7 +100,7 @@ Edit them in **one place**: `PRICES` at the top of
 | Új kazán: kombi 24 kW / tárolós 46 l / külső 125 l | +450 000 / +900 000 / +900 000 |
 | Kémény: tetőn át / tégla kéménybe / gyűjtőkémény | +380 000 / +600 000 / +600 000 |
 | Fi-relé: van / nincs / nem tudom | +50 000 / +100 000 / +50 000 (nem tudom also lists the +50 000 surcharge) |
-| Garancia: 2 / 5 / 10 év (question 6, changeable on the quote) | +0 / +60 000 / +150 000 |
+| Garancia: 3 év / 10 év (question 6, changeable on the quote) | +0 / +150 000 (10 év = a different appliance; placeholder price) |
 | Always: vizes rendszer, üzembe helyezés, bontás | +300 000, +50 000, +90 000 |
 
 "Nem tudom" prices the cheapest variant **and** adds a surcharge line with the
