@@ -781,6 +781,40 @@ export default async function handler(request, response) {
             return response.status(200).json({ answer: questionText("old_boiler", sel), ...askPayload("old_boiler", sel) });
         }
 
+        // --- ACTION: the website's plain contact form (Kapcsolat) --------------
+        // Sent the same way as quote leads (Resend, aqua-system.hu sender,
+        // ownerTo()), so it lands in Ferenc's inbox and shows in the Vercel log.
+        if (action === "contact") {
+            const c = request.body.contact || {};
+            const f = (k, max) => String(c[k] == null ? "" : c[k]).trim().slice(0, max);
+            if (c.botcheck) return response.status(200).json({ success: true }); // honeypot
+            const name = f("name", 120), reach = f("reach", 200);
+            if (!name || !reach) return response.status(400).json({ success: false, error: "missing fields" });
+            const fields = [
+                ["Név", name],
+                ["Elérhetőség", reach],
+                ["Milyen munka", f("workType", 120) || "nincs megadva"],
+                ["Helyszín", f("place", 200) || "nincs megadva"],
+                ["Üzenet", f("message", 4000) || "-"],
+            ];
+            console.log(`KAPCSOLATI ŰRLAP: ${name} | ${reach}`);
+            const phoneLike = /^[+\d][\d\s()/-]{5,}$/.test(reach);
+            const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#111">
+              <h2 style="margin:0 0 12px;color:#0f2a5e">Új üzenet a weboldalról</h2>
+              <table style="border-collapse:collapse">${fields.map(([k, v]) =>
+                `<tr><td style="padding:4px 14px 4px 0;color:#6b7280;vertical-align:top">${k}</td><td style="padding:4px 0;white-space:pre-wrap"><b>${esc(v)}</b></td></tr>`).join("")}</table>
+              ${phoneLike ? `<p style="margin-top:16px"><a href="${telHref(reach)}" style="background:#0f2a5e;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Hívás: ${esc(reach)}</a></p>` : ""}
+            </div>`;
+            const text = fields.map(([k, v]) => `${k}: ${v}`).join("\n");
+            const ok = await sendEmail({
+                to: ownerTo(),
+                subject: `Új üzenet a weboldalról — ${name}`,
+                html, text,
+                replyTo: EMAIL_RE.test(reach) ? reach : undefined,
+            });
+            return response.status(ok ? 200 : 502).json({ success: ok });
+        }
+
         // --- ACTION: customer changed the warranty on the finished quote -------
         if (action === "set_warranty") {
             const sel = cleanLeadSel(lead);
