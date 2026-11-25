@@ -962,7 +962,7 @@ async function sendEmail({ to, subject, html, text, replyTo, attachments }) {
 // go to LEAD_EMAIL_TO only — they keep arriving instead of all bouncing. Once
 // the domain is verified and LEAD_EMAIL_FROM is changed, the client's inbox is
 // added automatically, with no code change.
-const OWNER_EMAIL = "ferenc.nagy@aqua-system.hu";
+const OWNER_EMAIL = "kazancsere@aqua-system.hu";
 const usingTestSender = () => /onboarding@resend\.dev/i.test(leadFrom());
 const ownerTo = () => {
     const copy = process.env.LEAD_EMAIL_TO || "pirint.milan@gmail.com";
